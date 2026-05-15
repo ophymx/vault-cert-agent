@@ -1,0 +1,251 @@
+// Package writer commits fetched cert material to disk atomically
+// and enforces mode/owner on the resulting files.
+package writer
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"log/slog"
+	"os"
+	"os/user"
+	"path/filepath"
+	"strconv"
+
+	"github.com/ophymx/vault-cert-agent/internal/config"
+	"github.com/ophymx/vault-cert-agent/internal/source"
+)
+
+// Writer commits Material to disk. One per process is sufficient;
+// state is per-call.
+type Writer struct {
+	logger *slog.Logger
+}
+
+// New returns a Writer that emits progress to the given logger.
+func New(logger *slog.Logger) *Writer { return &Writer{logger: logger} }
+
+// Result describes what Write did.
+type Result struct {
+	// Changed is true when any of the resulting files had its content
+	// modified by this call. Used by the renewer to decide whether to
+	// run reload_command.
+	Changed bool
+	// Paths is every final on-disk path Write touched, in the order
+	// they were processed.
+	Paths []string
+}
+
+// Write commits material to disk per cert.Format, then re-enforces
+// mode and owner on every resulting file — including when the content
+// was already up to date.
+func (w *Writer) Write(material *source.Material, cert config.CertConfig) (*Result, error) {
+	mode, uid, gid, err := resolvePerms(cert)
+	if err != nil {
+		return nil, err
+	}
+
+	switch cert.Format {
+	case config.FormatSplit:
+		return w.writeSplit(material, cert, mode, uid, gid)
+	case config.FormatCombined:
+		return w.writeCombined(material, cert, mode, uid, gid)
+	default:
+		return nil, fmt.Errorf("unknown format %q", cert.Format)
+	}
+}
+
+// ResolveLeafPath returns the on-disk path where the leaf cert lives
+// for the given cert config. The renewer uses this to compute the
+// existing cert's remaining lifetime before deciding to fetch.
+func ResolveLeafPath(cert config.CertConfig) string {
+	switch cert.Format {
+	case config.FormatSplit:
+		certPath, _, _ := resolveSplitPaths(cert)
+		return certPath
+	case config.FormatCombined:
+		return cert.Destination
+	}
+	return ""
+}
+
+func (w *Writer) writeSplit(m *source.Material, cert config.CertConfig, mode os.FileMode, uid, gid int) (*Result, error) {
+	certPath, keyPath, caPath := resolveSplitPaths(cert)
+	if err := os.MkdirAll(cert.Destination, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", cert.Destination, err)
+	}
+	out := &Result{}
+	for _, f := range []struct {
+		path    string
+		content []byte
+	}{
+		{certPath, m.Cert},
+		{keyPath, m.Key},
+		{caPath, m.CA},
+	} {
+		changed, err := w.commitFile(f.path, f.content, mode, uid, gid)
+		if err != nil {
+			return nil, err
+		}
+		out.Changed = out.Changed || changed
+		out.Paths = append(out.Paths, f.path)
+	}
+	return out, nil
+}
+
+func (w *Writer) writeCombined(m *source.Material, cert config.CertConfig, mode os.FileMode, uid, gid int) (*Result, error) {
+	// HAProxy expects leaf, then chain, then private key in one file.
+	content := make([]byte, 0, len(m.Cert)+len(m.CA)+len(m.Key))
+	content = append(content, m.Cert...)
+	content = append(content, m.CA...)
+	content = append(content, m.Key...)
+
+	changed, err := w.commitFile(cert.Destination, content, mode, uid, gid)
+	if err != nil {
+		return nil, err
+	}
+	return &Result{Changed: changed, Paths: []string{cert.Destination}}, nil
+}
+
+// commitFile writes content to path iff it differs from what's already
+// there, and always re-enforces mode + owner. The perms-on-unchanged
+// path is intentional: it fixes drift from prior runs where a config
+// permission change didn't take effect because the cert content was
+// still fresh (the vault-pki-renew bug from the bash days).
+func (w *Writer) commitFile(path string, content []byte, mode os.FileMode, uid, gid int) (bool, error) {
+	existing, err := os.ReadFile(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		// First-time write.
+	case err != nil:
+		return false, fmt.Errorf("read %s: %w", path, err)
+	case bytes.Equal(existing, content):
+		w.logger.Debug("content unchanged, enforcing perms", "path", path)
+		if err := enforcePerms(path, mode, uid, gid); err != nil {
+			return false, err
+		}
+		return false, nil
+	}
+
+	w.logger.Debug("writing file", "path", path, "bytes", len(content))
+	if err := atomicWrite(path, content, mode, uid, gid); err != nil {
+		return false, fmt.Errorf("write %s: %w", path, err)
+	}
+	return true, nil
+}
+
+// atomicWrite stages content at a temp file in the same directory,
+// applies mode+owner there, then renames into place. Readers never
+// see a partial or wrong-permissioned file at the final path.
+func atomicWrite(path string, content []byte, mode os.FileMode, uid, gid int) error {
+	dir := filepath.Dir(path)
+	f, err := os.CreateTemp(dir, ".vault-cert-agent-*")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
+
+	if _, err := f.Write(content); err != nil {
+		_ = f.Close()
+		cleanup()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		cleanup()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Chmod(tmpPath, mode); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Chown(tmpPath, uid, gid); err != nil {
+		cleanup()
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		cleanup()
+		return err
+	}
+	return nil
+}
+
+func enforcePerms(path string, mode os.FileMode, uid, gid int) error {
+	if err := os.Chmod(path, mode); err != nil {
+		return fmt.Errorf("chmod %s: %w", path, err)
+	}
+	if err := os.Chown(path, uid, gid); err != nil {
+		return fmt.Errorf("chown %s: %w", path, err)
+	}
+	return nil
+}
+
+func resolvePerms(cert config.CertConfig) (os.FileMode, int, int, error) {
+	mode, err := config.ParseMode(cert.Mode)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	userName, groupName, err := config.ParseOwner(cert.Owner)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	uid, gid, err := lookupOwner(userName, groupName)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	return mode, uid, gid, nil
+}
+
+func lookupOwner(userName, groupName string) (int, int, error) {
+	u, err := user.Lookup(userName)
+	if err != nil {
+		return 0, 0, fmt.Errorf("lookup user %q: %w", userName, err)
+	}
+	g, err := user.LookupGroup(groupName)
+	if err != nil {
+		return 0, 0, fmt.Errorf("lookup group %q: %w", groupName, err)
+	}
+	uid, err := strconv.Atoi(u.Uid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse uid %q: %w", u.Uid, err)
+	}
+	gid, err := strconv.Atoi(g.Gid)
+	if err != nil {
+		return 0, 0, fmt.Errorf("parse gid %q: %w", g.Gid, err)
+	}
+	return uid, gid, nil
+}
+
+// splitNames is the per-source default filename triple for the
+// split-format layout. Operators can override any of the three via
+// the per-cert `files` block; an empty override falls back to the
+// default here.
+type splitNames struct{ cert, key, ca string }
+
+var splitDefaults = map[string]splitNames{
+	config.SourcePKI:         {cert: "node.crt", key: "node.key", ca: "ca.crt"},
+	config.SourceLetsencrypt: {cert: "tls.crt", key: "tls.key", ca: "ca.crt"},
+}
+
+func resolveSplitPaths(c config.CertConfig) (certPath, keyPath, caPath string) {
+	n := splitDefaults[c.Source]
+	if c.Files != nil {
+		if c.Files.Cert != "" {
+			n.cert = c.Files.Cert
+		}
+		if c.Files.Key != "" {
+			n.key = c.Files.Key
+		}
+		if c.Files.CA != "" {
+			n.ca = c.Files.CA
+		}
+	}
+	return filepath.Join(c.Destination, n.cert),
+		filepath.Join(c.Destination, n.key),
+		filepath.Join(c.Destination, n.ca)
+}
