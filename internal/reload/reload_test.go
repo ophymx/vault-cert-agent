@@ -272,4 +272,3 @@ func TestReload_BusOpenedLazilyAndOnce(t *testing.T) {
 		t.Error("Close() did not close the underlying bus")
 	}
 }
-

@@ -64,13 +64,13 @@ type RenewalConfig struct {
 // CertConfig is one `cert "name" { ... }` block. Fields are flat across
 // sources; which ones are required depends on Source.
 type CertConfig struct {
-	Name          string         `hcl:"name,label"`
-	Source        string         `hcl:"source"`
-	Destination   string         `hcl:"destination"`
-	Format        string         `hcl:"format"`
-	Files         *FilesOverride `hcl:"files,block"`
-	Owner         string         `hcl:"owner"`
-	Mode          string         `hcl:"mode"`
+	Name        string         `hcl:"name,label"`
+	Source      string         `hcl:"source"`
+	Destination string         `hcl:"destination"`
+	Format      string         `hcl:"format"`
+	Files       *FilesOverride `hcl:"files,block"`
+	Owner       string         `hcl:"owner"`
+	Mode        string         `hcl:"mode"`
 
 	// Reload action. At most one of ReloadCommand and ReloadUnits may
 	// be set. ReloadMethod (with defaults to DefaultReloadMethod) only
