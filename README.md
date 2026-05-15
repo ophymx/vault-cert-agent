@@ -30,7 +30,7 @@ apt install vault-cert-agent
 
 The package installs:
 
-- `/usr/local/sbin/vault-cert-agent` — the binary
+- `/usr/sbin/vault-cert-agent` — the binary
 - `/usr/lib/systemd/system/vault-cert-agent.{service,timer}` — oneshot + hourly trigger
 - `/etc/vault-cert-agent/` — config directory, mode `0700 root:root`
 - `/usr/share/doc/vault-cert-agent/config.example.hcl` — annotated example

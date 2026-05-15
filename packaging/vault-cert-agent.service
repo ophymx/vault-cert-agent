@@ -8,7 +8,7 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/vault-cert-agent
+ExecStart=/usr/sbin/vault-cert-agent
 # Runs as root: needs to chown cert files to per-consumer owners
 # (postgres, haproxy, etc.) and write under /etc/<consumer>/.
 User=root
