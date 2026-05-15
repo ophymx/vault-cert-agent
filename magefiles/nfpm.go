@@ -27,7 +27,7 @@ func nfpmInfo(arch, version string) *nfpm.Info {
 			Contents: files.Contents{
 				{
 					Source:      "dist/bin/vault-cert-agent",
-					Destination: "/usr/local/sbin/vault-cert-agent",
+					Destination: "/usr/sbin/vault-cert-agent",
 					FileInfo:    &files.ContentFileInfo{Mode: 0o755},
 				},
 				{
@@ -59,6 +59,7 @@ func nfpmInfo(arch, version string) *nfpm.Info {
 			Scripts: nfpm.Scripts{
 				PostInstall: "packaging/scripts/postinstall.sh",
 				PreRemove:   "packaging/scripts/preremove.sh",
+				PostRemove:  "packaging/scripts/postremove.sh",
 			},
 		},
 	}
