@@ -1,0 +1,18 @@
+[Unit]
+Description=Renew TLS material from Vault
+Documentation=https://github.com/ophymx/vault-cert-agent
+# network-online ensures DNS + routing are usable before the Vault
+# round-trip. Without it the first post-boot run can race the network.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/vault-cert-agent
+# Runs as root: needs to chown cert files to per-consumer owners
+# (postgres, haproxy, etc.) and write under /etc/<consumer>/.
+User=root
+Group=root
+# Bound generously — Vault calls + reloads should finish in seconds,
+# but pathological DNS could stretch a run.
+TimeoutStartSec=120s

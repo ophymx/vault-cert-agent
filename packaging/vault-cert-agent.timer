@@ -1,0 +1,15 @@
+[Unit]
+Description=Run vault-cert-agent hourly
+
+[Timer]
+OnCalendar=hourly
+# RandomizedDelaySec spreads runs across the hour so a multi-node
+# cluster doesn't hammer Vault at the top of the hour.
+RandomizedDelaySec=300
+# Persistent catches up if the system was off when a run was due —
+# important because a missed run can mean a cert ages past its
+# threshold while no one notices.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
