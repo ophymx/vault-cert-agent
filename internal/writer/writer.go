@@ -94,6 +94,12 @@ func (w *Writer) writeSplit(m *source.Material, cert config.CertConfig, mode os.
 }
 
 func (w *Writer) writeCombined(m *source.Material, cert config.CertConfig, mode os.FileMode, uid, gid int) (*Result, error) {
+	// In combined mode cert.Destination is a file path (HAProxy
+	// convention), so the parent directory is what may not exist yet.
+	parent := filepath.Dir(cert.Destination)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir %s: %w", parent, err)
+	}
 	// HAProxy expects leaf, then chain, then private key in one file.
 	content := make([]byte, 0, len(m.Cert)+len(m.CA)+len(m.Key))
 	content = append(content, m.Cert...)

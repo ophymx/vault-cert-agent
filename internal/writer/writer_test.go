@@ -198,6 +198,27 @@ func TestWrite_Combined_SingleFileOrderedCertCAKey(t *testing.T) {
 	}
 }
 
+func TestWrite_Combined_CreatesParentDir(t *testing.T) {
+	// First-run case for HAProxy-style combined certs: the package
+	// installer typically owns /etc/<consumer>/ but not necessarily
+	// every intermediate. The writer must create the parent itself.
+	base := t.TempDir()
+	destFile := filepath.Join(base, "newdir", "haproxy.pem")
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: destFile,
+		Format:      config.FormatCombined,
+		Owner:       testOwner(t),
+		Mode:        "0640",
+	}
+	if _, err := newWriter().Write(sampleMaterial(), cert); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if _, err := os.Stat(destFile); err != nil {
+		t.Errorf("expected combined file at %s: %v", destFile, err)
+	}
+}
+
 func TestWrite_Split_FilesOverrideBeatsDefaults(t *testing.T) {
 	dir := t.TempDir()
 	cert := config.CertConfig{
