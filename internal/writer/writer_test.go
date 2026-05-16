@@ -351,6 +351,79 @@ func TestResolveLeafPath(t *testing.T) {
 	}
 }
 
+func TestWrite_Split_RefusesSymlinkAtDestination(t *testing.T) {
+	// If a low-priv consumer can plant a symlink at the leaf path
+	// pointing at /etc/shadow (or whatever), the agent must NOT chown
+	// the target. enforcePerms + the read path both refuse via O_NOFOLLOW.
+	dir := t.TempDir()
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: dir,
+		Format:      config.FormatSplit,
+		Owner:       testOwner(t),
+		Mode:        "0600",
+	}
+	w := newWriter()
+	if _, err := w.Write(sampleMaterial(), cert); err != nil {
+		t.Fatal(err)
+	}
+	// Swap one of the files for a symlink to an unrelated target.
+	leaf := filepath.Join(dir, "node.crt")
+	decoy := filepath.Join(dir, "decoy")
+	if err := os.WriteFile(decoy, []byte("decoy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(leaf); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(decoy, leaf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Second run must refuse the symlinked path. Whether it errors via
+	// the read path or the enforce path, what matters is that Write
+	// returns an error and decoy keeps its 0644 mode.
+	if _, err := w.Write(sampleMaterial(), cert); err == nil {
+		t.Fatal("expected error when destination is a symlink")
+	}
+	info, err := os.Lstat(decoy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("decoy mode mutated: got %o, want 0644 (symlink should have blocked chmod)", info.Mode().Perm())
+	}
+}
+
+func TestWrite_Combined_RefusesSymlinkAtDestination(t *testing.T) {
+	dir := t.TempDir()
+	destFile := filepath.Join(dir, "bundle.pem")
+	decoy := filepath.Join(dir, "decoy")
+	if err := os.WriteFile(decoy, []byte("decoy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(decoy, destFile); err != nil {
+		t.Fatal(err)
+	}
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: destFile,
+		Format:      config.FormatCombined,
+		Owner:       testOwner(t),
+		Mode:        "0600",
+	}
+	if _, err := newWriter().Write(sampleMaterial(), cert); err == nil {
+		t.Fatal("expected error when combined destination is a symlink")
+	}
+	info, err := os.Lstat(decoy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o644 {
+		t.Errorf("decoy mode mutated: got %o, want 0644", info.Mode().Perm())
+	}
+}
+
 func TestWrite_AtomicWriteLeavesNoTempFile(t *testing.T) {
 	dir := t.TempDir()
 	cert := config.CertConfig{

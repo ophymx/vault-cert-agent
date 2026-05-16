@@ -6,11 +6,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
+	"syscall"
 
 	"github.com/ophymx/vault-cert-agent/internal/config"
 	"github.com/ophymx/vault-cert-agent/internal/source"
@@ -162,13 +164,17 @@ var bundleLayouts = map[string][3]bundleSlot{
 // path is intentional: it fixes drift from prior runs where a config
 // permission change didn't take effect because the cert content was
 // still fresh (the vault-pki-renew bug from the bash days).
+//
+// Symlinks at path are refused. We run as root and chown to per-cert
+// owners; if a consumer with write access to the destination directory
+// swaps the file for a symlink we must not chmod/chown the target.
 func (w *Writer) commitFile(path string, content []byte, mode os.FileMode, uid, gid int) (bool, error) {
-	existing, err := os.ReadFile(path)
+	existing, err := readRegularFile(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		// First-time write.
 	case err != nil:
-		return false, fmt.Errorf("read %s: %w", path, err)
+		return false, err
 	case bytes.Equal(existing, content):
 		w.logger.Debug("content unchanged, enforcing perms", "path", path)
 		if err := enforcePerms(path, mode, uid, gid); err != nil {
@@ -184,9 +190,35 @@ func (w *Writer) commitFile(path string, content []byte, mode os.FileMode, uid, 
 	return true, nil
 }
 
+// readRegularFile opens path with O_NOFOLLOW (so a symlinked path
+// errors out instead of redirecting us) and verifies the inode is a
+// regular file (no fifos, devices, sockets — same defensive posture).
+// Returns os.ErrNotExist transparently for the first-write case.
+func readRegularFile(path string) ([]byte, error) {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file (mode %s)", path, info.Mode())
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return b, nil
+}
+
 // atomicWrite stages content at a temp file in the same directory,
-// applies mode+owner there, then renames into place. Readers never
-// see a partial or wrong-permissioned file at the final path.
+// applies mode+owner against the open fd, then renames into place.
+// Readers never see a partial or wrong-permissioned file. The fd-based
+// chmod/chown ensures the perms land on the inode we just created
+// rather than whatever path resolution might walk to.
 func atomicWrite(path string, content []byte, mode os.FileMode, uid, gid int) error {
 	dir := filepath.Dir(path)
 	f, err := os.CreateTemp(dir, ".vault-cert-agent-*")
@@ -194,42 +226,60 @@ func atomicWrite(path string, content []byte, mode os.FileMode, uid, gid int) er
 		return err
 	}
 	tmpPath := f.Name()
-	cleanup := func() { _ = os.Remove(tmpPath) }
+	cleanup := func() {
+		_ = f.Close()
+		_ = os.Remove(tmpPath)
+	}
 
 	if _, err := f.Write(content); err != nil {
-		_ = f.Close()
 		cleanup()
 		return err
 	}
 	if err := f.Sync(); err != nil {
-		_ = f.Close()
+		cleanup()
+		return err
+	}
+	if err := f.Chmod(mode); err != nil {
+		cleanup()
+		return err
+	}
+	if err := f.Chown(uid, gid); err != nil {
 		cleanup()
 		return err
 	}
 	if err := f.Close(); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Chmod(tmpPath, mode); err != nil {
-		cleanup()
-		return err
-	}
-	if err := os.Chown(tmpPath, uid, gid); err != nil {
-		cleanup()
+		_ = os.Remove(tmpPath)
 		return err
 	}
 	if err := os.Rename(tmpPath, path); err != nil {
-		cleanup()
+		_ = os.Remove(tmpPath)
 		return err
 	}
 	return nil
 }
 
+// enforcePerms re-applies mode + owner on an existing file. O_NOFOLLOW
+// + regular-file check keeps a symlink or fifo planted at path from
+// redirecting the chmod/chown to an unrelated inode. Once the fd is
+// open the inode is pinned, so there's no TOCTOU window between
+// fchmod and fchown.
 func enforcePerms(path string, mode os.FileMode, uid, gid int) error {
-	if err := os.Chmod(path, mode); err != nil {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("%s is not a regular file (mode %s)", path, info.Mode())
+	}
+	if err := f.Chmod(mode); err != nil {
 		return fmt.Errorf("chmod %s: %w", path, err)
 	}
-	if err := os.Chown(path, uid, gid); err != nil {
+	if err := f.Chown(uid, gid); err != nil {
 		return fmt.Errorf("chown %s: %w", path, err)
 	}
 	return nil
