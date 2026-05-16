@@ -1,6 +1,6 @@
 module github.com/ophymx/vault-cert-agent
 
-go 1.26.2
+go 1.26
 
 require (
 	github.com/coreos/go-systemd/v22 v22.7.0
