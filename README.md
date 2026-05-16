@@ -22,10 +22,16 @@ Adding a new source is one file in `internal/source/` plus one line in
 
 ## Install
 
-The build pipeline produces a Debian package. From the internal apt repo:
+Each tagged release publishes `linux_amd64.deb` and `linux_arm64.deb`
+on the [GitHub Releases page](https://github.com/ophymx/vault-cert-agent/releases),
+alongside `.tar.gz` archives and a `checksums.txt`.
 
 ```
-apt install vault-cert-agent
+# from a release asset
+sudo dpkg -i vault-cert-agent_*.deb
+
+# or, if the package is mirrored into an apt repo
+sudo apt install vault-cert-agent
 ```
 
 The package installs:
@@ -36,15 +42,25 @@ The package installs:
 - `/usr/share/doc/vault-cert-agent/config.example.hcl` — annotated example
 
 The timer is enabled and started on first install. Upgrades leave the
-existing enabled/disabled state alone.
+existing enabled/disabled state alone. `apt purge` removes
+`/etc/vault-cert-agent/` (including the AppRole credentials) along
+with the package files.
 
 ## Configure
 
 Drop three files into `/etc/vault-cert-agent/`:
 
-- `role_id` — Vault AppRole role_id
-- `secret_id` — Vault AppRole secret_id
-- `config.hcl` — config (see [`config.example.hcl`](packaging/config.example.hcl))
+| file         | content                            | required mode  |
+| ------------ | ---------------------------------- | -------------- |
+| `role_id`    | Vault AppRole role_id              | `0600` (no group/other) |
+| `secret_id`  | Vault AppRole secret_id            | `0600` (no group/other) |
+| `config.hcl` | config (see [`config.example.hcl`](packaging/config.example.hcl)) | `0644` typical |
+
+The agent refuses to start if `role_id` or `secret_id` has any
+group/other access bits set, or if the path is a symlink — both would
+mean the AppRole identity is already outside the agent's trust boundary.
+`vault.url` must use `https://`; an `http://` value is rejected at
+config load.
 
 Minimal config:
 
@@ -115,10 +131,21 @@ reload_units  = ["pgpool2.service", "haproxy.service"]
 reload_method = "try-reload-or-restart"
 ```
 
-Writes are atomic (temp file in the destination directory → `chmod` →
-`chown` → `rename`). Permissions are re-enforced on every run even when
-the content hasn't changed, which fixes a perm-drift bug the bash
-scripts had.
+### Write semantics
+
+Writes are atomic: temp file in the destination directory, `chmod` and
+`chown` applied to the open fd, then `rename` into place. Readers never
+see a partial or wrong-permissioned file.
+
+Permissions are re-enforced on every run even when the content hasn't
+changed — fixes a perm-drift bug the bash scripts had.
+
+The agent runs as root and chowns cert files to per-consumer owners,
+so it refuses to operate on symlinks (or any non-regular file) at cert
+paths. Without this, a low-privileged consumer with write access to a
+cert directory could plant a symlink in place of a cert file and steer
+the next run's chmod/chown at an arbitrary target. If that error fires,
+investigate the path before redeploying.
 
 ## Run
 
