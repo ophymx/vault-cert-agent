@@ -16,3 +16,27 @@ Group=root
 # Bound generously — Vault calls + reloads should finish in seconds,
 # but pathological DNS could stretch a run.
 TimeoutStartSec=120s
+
+# ─── Sandboxing ──────────────────────────────────────────────────
+# The agent runs as root so most isolation primitives can't shrink
+# its blast radius much, but the following stop a compromise from
+# escalating into a broader system foothold without breaking the
+# agent's actual workload (writing under /etc/<consumer>/, calling
+# Vault, talking to systemd via D-Bus, exec'ing a reload command).
+#
+# ProtectSystem=full (not =strict) keeps /etc writable so per-cert
+# destinations work without enumerating them in ReadWritePaths.
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
