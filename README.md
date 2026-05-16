@@ -149,15 +149,29 @@ them) via `log/slog`.
 
 ## Build from source
 
+For a local debug binary:
+
 ```
-mage build    # compile linux binary into dist/bin/
-mage package  # build + produce a .deb under dist/pkg/
-mage clean    # remove dist/
+go build -o vault-cert-agent ./cmd/vault-cert-agent
 ```
 
-Requires Go 1.26+ and [mage](https://magefile.org/). Version string
-comes from `git describe --tags --dirty --always`; falls back to
-`0.0.0-dev`.
+For a release-shape build (binary + `.deb` + tarball under `dist/`)
+without tagging or publishing, use [goreleaser](https://goreleaser.com/):
+
+```
+goreleaser release --snapshot --clean
+```
+
+Requires Go 1.26+ and goreleaser v2+. The version string is derived
+from `git describe`; snapshot builds get a `<next>-snapshot+<sha>`
+suffix.
+
+## Release
+
+Push a `vX.Y.Z` tag and the `release` GitHub Actions workflow runs
+goreleaser, which builds linux/amd64 + linux/arm64 binaries, packs
+`.tar.gz` archives, builds `.deb` packages, and publishes a GitHub
+Release with changelog + checksums.
 
 ## Tests
 
