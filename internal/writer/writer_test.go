@@ -198,6 +198,51 @@ func TestWrite_Combined_SingleFileOrderedCertCAKey(t *testing.T) {
 	}
 }
 
+func TestWrite_Combined_BundleOrderRespected(t *testing.T) {
+	// All six permutations should produce the configured slot order.
+	cases := []struct {
+		order string
+		want  []string // substring sequence
+	}{
+		{config.BundleOrderCertChainKey, []string{"leaf", "int", "root", "key"}},
+		{config.BundleOrderCertKeyChain, []string{"leaf", "key", "int", "root"}},
+		{config.BundleOrderKeyCertChain, []string{"key", "leaf", "int", "root"}},
+		{config.BundleOrderKeyChainCert, []string{"key", "int", "root", "leaf"}},
+		{config.BundleOrderChainCertKey, []string{"int", "root", "leaf", "key"}},
+		{config.BundleOrderChainKeyCert, []string{"int", "root", "key", "leaf"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.order, func(t *testing.T) {
+			dir := t.TempDir()
+			destFile := filepath.Join(dir, "bundle.pem")
+			cert := config.CertConfig{
+				Source:      config.SourcePKI,
+				Destination: destFile,
+				Format:      config.FormatCombined,
+				BundleOrder: tc.order,
+				Owner:       testOwner(t),
+				Mode:        "0600",
+			}
+			if _, err := newWriter().Write(sampleMaterial(), cert); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(destFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lastIdx := -1
+			for _, marker := range tc.want {
+				idx := strings.Index(string(got), marker)
+				if idx <= lastIdx {
+					t.Errorf("marker %q not in expected position (idx=%d, prev=%d) for order %q\nfile: %q",
+						marker, idx, lastIdx, tc.order, got)
+				}
+				lastIdx = idx
+			}
+		})
+	}
+}
+
 func TestWrite_Combined_CreatesParentDir(t *testing.T) {
 	// First-run case for HAProxy-style combined certs: the package
 	// installer typically owns /etc/<consumer>/ but not necessarily

@@ -58,6 +58,47 @@ func TestValidate_UnknownReloadMethodRejected(t *testing.T) {
 	}
 }
 
+func TestValidate_BundleOrderOnSplitRejected(t *testing.T) {
+	c := baseCert()
+	c.BundleOrder = BundleOrderCertChainKey
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "bundle_order only applies to format=combined") {
+		t.Errorf("expected bundle_order-on-split error, got %v", err)
+	}
+}
+
+func TestValidate_UnknownBundleOrderRejected(t *testing.T) {
+	c := baseCert()
+	c.Format = FormatCombined
+	c.Destination = "/etc/c/bundle.pem"
+	c.BundleOrder = "key-only"
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "unknown bundle_order") {
+		t.Errorf("expected unknown-bundle_order error, got %v", err)
+	}
+}
+
+func TestValidate_AllKnownBundleOrdersAccepted(t *testing.T) {
+	for _, order := range []string{
+		BundleOrderCertChainKey,
+		BundleOrderCertKeyChain,
+		BundleOrderKeyCertChain,
+		BundleOrderKeyChainCert,
+		BundleOrderChainCertKey,
+		BundleOrderChainKeyCert,
+	} {
+		t.Run(order, func(t *testing.T) {
+			c := baseCert()
+			c.Format = FormatCombined
+			c.Destination = "/etc/c/bundle.pem"
+			c.BundleOrder = order
+			if err := c.validate(); err != nil {
+				t.Errorf("unexpected error for %q: %v", order, err)
+			}
+		})
+	}
+}
+
 func TestValidate_ValidReloadConfigurationsAccepted(t *testing.T) {
 	cases := []struct {
 		name string

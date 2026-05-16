@@ -75,3 +75,21 @@ cert "db-cluster-le" {
   # D-Bus path. reload_method defaults to "try-reload-or-restart".
   reload_units   = ["pgpool2.service"]
 }
+
+
+# ─── HAProxy-style combined bundle ────────────────────────────────
+# format=combined writes one file with the three PEM blobs
+# concatenated. bundle_order picks the layout; default
+# "cert-chain-key" matches HAProxy's `crt` directive. Valid values:
+#   cert-chain-key, cert-key-chain, key-cert-chain,
+#   key-chain-cert, chain-cert-key, chain-key-cert.
+cert "edge-haproxy" {
+  source         = "letsencrypt"
+  le_path        = "letsencrypt/certs/dns-01/home/cloudflare/edge.example.com"
+  destination    = "/etc/haproxy/certs/edge.pem"
+  format         = "combined"
+  bundle_order   = "cert-chain-key"
+  owner          = "haproxy:haproxy"
+  mode           = "0600"
+  reload_units   = ["haproxy.service"]
+}

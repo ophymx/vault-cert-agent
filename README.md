@@ -76,6 +76,24 @@ cert "pg-db0" {
 }
 ```
 
+### Combined format
+
+With `format = "combined"` the writer emits a single file containing
+the leaf cert, the chain, and the private key concatenated. The
+`bundle_order` field selects the layout — default `cert-chain-key`
+(what HAProxy's `crt` directive expects). Valid values:
+
+| value              | layout                  | typical consumer        |
+| ------------------ | ----------------------- | ----------------------- |
+| `cert-chain-key`   | leaf, chain, key        | HAProxy (default)       |
+| `cert-key-chain`   | leaf, key, chain        |                         |
+| `key-cert-chain`   | key, leaf, chain        |                         |
+| `key-chain-cert`   | key, chain, leaf        |                         |
+| `chain-cert-key`   | chain, leaf, key        |                         |
+| `chain-key-cert`   | chain, key, leaf        |                         |
+
+`bundle_order` is rejected with `format = "split"`.
+
 ### Reload action
 
 Each cert can specify exactly one of two reload styles (or neither):

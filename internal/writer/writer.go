@@ -100,17 +100,61 @@ func (w *Writer) writeCombined(m *source.Material, cert config.CertConfig, mode 
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", parent, err)
 	}
-	// HAProxy expects leaf, then chain, then private key in one file.
+	parts, err := bundleParts(cert.BundleOrder, m)
+	if err != nil {
+		return nil, err
+	}
 	content := make([]byte, 0, len(m.Cert)+len(m.CA)+len(m.Key))
-	content = append(content, m.Cert...)
-	content = append(content, m.CA...)
-	content = append(content, m.Key...)
+	for _, p := range parts {
+		content = append(content, p...)
+	}
 
 	changed, err := w.commitFile(cert.Destination, content, mode, uid, gid)
 	if err != nil {
 		return nil, err
 	}
 	return &Result{Changed: changed, Paths: []string{cert.Destination}}, nil
+}
+
+// bundleParts returns the three PEM blobs in the order dictated by
+// order. Empty order falls back to DefaultBundleOrder.
+func bundleParts(order string, m *source.Material) ([][]byte, error) {
+	if order == "" {
+		order = config.DefaultBundleOrder
+	}
+	layout, ok := bundleLayouts[order]
+	if !ok {
+		return nil, fmt.Errorf("unknown bundle_order %q", order)
+	}
+	parts := make([][]byte, 3)
+	for i, slot := range layout {
+		switch slot {
+		case slotCert:
+			parts[i] = m.Cert
+		case slotChain:
+			parts[i] = m.CA
+		case slotKey:
+			parts[i] = m.Key
+		}
+	}
+	return parts, nil
+}
+
+type bundleSlot int
+
+const (
+	slotCert bundleSlot = iota
+	slotChain
+	slotKey
+)
+
+var bundleLayouts = map[string][3]bundleSlot{
+	config.BundleOrderCertChainKey: {slotCert, slotChain, slotKey},
+	config.BundleOrderCertKeyChain: {slotCert, slotKey, slotChain},
+	config.BundleOrderKeyCertChain: {slotKey, slotCert, slotChain},
+	config.BundleOrderKeyChainCert: {slotKey, slotChain, slotCert},
+	config.BundleOrderChainCertKey: {slotChain, slotCert, slotKey},
+	config.BundleOrderChainKeyCert: {slotChain, slotKey, slotCert},
 }
 
 // commitFile writes content to path iff it differs from what's already

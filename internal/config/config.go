@@ -20,6 +20,23 @@ const (
 	FormatCombined = "combined"
 )
 
+// BundleOrder values for CertConfig.BundleOrder. Only meaningful with
+// format=combined; selects the concatenation order of the three PEM
+// blobs in the output file. HAProxy wants cert-chain-key; other
+// consumers vary, so all six permutations are spelled out.
+const (
+	BundleOrderCertChainKey = "cert-chain-key"
+	BundleOrderCertKeyChain = "cert-key-chain"
+	BundleOrderKeyCertChain = "key-cert-chain"
+	BundleOrderKeyChainCert = "key-chain-cert"
+	BundleOrderChainCertKey = "chain-cert-key"
+	BundleOrderChainKeyCert = "chain-key-cert"
+)
+
+// DefaultBundleOrder matches the historical hard-coded order
+// (cert + chain + key) — what HAProxy's `crt` directive consumes.
+const DefaultBundleOrder = BundleOrderCertChainKey
+
 // ReloadMethod values for CertConfig.ReloadMethod. Each maps to the
 // systemctl verb of the same name (and the corresponding D-Bus method
 // on org.freedesktop.systemd1.Manager).
@@ -71,6 +88,11 @@ type CertConfig struct {
 	Files       *FilesOverride `hcl:"files,block"`
 	Owner       string         `hcl:"owner"`
 	Mode        string         `hcl:"mode"`
+
+	// BundleOrder controls the PEM concatenation order in combined
+	// format. Empty falls back to DefaultBundleOrder. Rejected with
+	// format=split.
+	BundleOrder string `hcl:"bundle_order,optional"`
 
 	// Reload action. At most one of ReloadCommand and ReloadUnits may
 	// be set. ReloadMethod (with defaults to DefaultReloadMethod) only

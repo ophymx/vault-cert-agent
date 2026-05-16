@@ -68,9 +68,16 @@ func (c CertConfig) validate() error {
 		return errors.New("format is required")
 	case FormatSplit:
 		// any files override allowed
+		if c.BundleOrder != "" {
+			return errors.New("bundle_order only applies to format=combined")
+		}
 	case FormatCombined:
 		if c.Files != nil {
 			return errors.New("files override is only valid with format=split")
+		}
+		if c.BundleOrder != "" && !validBundleOrder(c.BundleOrder) {
+			return fmt.Errorf("unknown bundle_order %q (want one of %s)",
+				c.BundleOrder, strings.Join(bundleOrders, ", "))
 		}
 	default:
 		return fmt.Errorf("unknown format %q (want %q or %q)", c.Format, FormatSplit, FormatCombined)
@@ -136,6 +143,19 @@ var reloadMethods = []string{
 
 func validReloadMethod(name string) bool {
 	return slices.Contains(reloadMethods, name)
+}
+
+var bundleOrders = []string{
+	BundleOrderCertChainKey,
+	BundleOrderCertKeyChain,
+	BundleOrderKeyCertChain,
+	BundleOrderKeyChainCert,
+	BundleOrderChainCertKey,
+	BundleOrderChainKeyCert,
+}
+
+func validBundleOrder(name string) bool {
+	return slices.Contains(bundleOrders, name)
 }
 
 // ParseOwner splits "user:group" into its two parts.
