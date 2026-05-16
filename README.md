@@ -35,14 +35,15 @@ sudo apt install vault-cert-agent
 The package installs:
 
 - `/usr/sbin/vault-cert-agent` — the binary
-- `/usr/lib/systemd/system/vault-cert-agent.{service,timer}` — oneshot + hourly trigger
+- `/usr/lib/systemd/system/vault-cert-agent.{service,timer}` — single-instance unit, oneshot + hourly trigger
+- `/usr/lib/systemd/system/vault-cert-agent@.{service,timer}` — templated unit for hosts with multiple independent agents
 - `/etc/vault-cert-agent/` — config directory, mode `0700 root:root`
 - `/usr/share/doc/vault-cert-agent/config.example.hcl` — annotated example
 
-The timer is enabled and started on first install. Upgrades leave the
-existing enabled/disabled state alone. `apt purge` removes
-`/etc/vault-cert-agent/` (including the AppRole credentials) along
-with the package files.
+The single-instance timer is enabled and started on first install.
+Upgrades leave the existing enabled/disabled state alone. `apt purge`
+removes `/etc/vault-cert-agent/` (including the AppRole credentials)
+along with the package files.
 
 ## Configure
 
@@ -89,6 +90,38 @@ cert "pg-db0" {
   reload_command = ["systemctl", "try-reload-or-restart", "pg_agentd.service"]
 }
 ```
+
+### Multiple instances on one host
+
+For hosts that need independently-scheduled agents — e.g. a host
+serving both database and metrics certs from different Vault
+AppRoles — use the templated unit. Each instance gets its own
+subdirectory under `/etc/vault-cert-agent/`:
+
+```
+/etc/vault-cert-agent/
+├── db/
+│   ├── config.hcl
+│   ├── role_id
+│   └── secret_id
+└── metrics/
+    ├── config.hcl
+    ├── role_id
+    └── secret_id
+```
+
+Enable + start each instance independently:
+
+```
+systemctl enable --now vault-cert-agent@db.timer
+systemctl enable --now vault-cert-agent@metrics.timer
+```
+
+The templated `ExecStart` passes `-config /etc/vault-cert-agent/%i/config.hcl`,
+so each instance's `vault { role_id_file = ... }` should point at the
+files under that instance's subdirectory. The single-instance unit
+(`vault-cert-agent.service`) and the templated form (`vault-cert-agent@.service`)
+can coexist on the same host without conflict.
 
 ### Combined format
 

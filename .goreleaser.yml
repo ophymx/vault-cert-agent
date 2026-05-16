@@ -37,6 +37,8 @@ archives:
       - packaging/config.example.hcl
       - packaging/vault-cert-agent.service
       - packaging/vault-cert-agent.timer
+      - packaging/vault-cert-agent@.service
+      - packaging/vault-cert-agent@.timer
 
 nfpms:
   - id: vault-cert-agent
@@ -64,6 +66,14 @@ nfpms:
           mode: 0644
       - src: packaging/vault-cert-agent.timer
         dst: /usr/lib/systemd/system/vault-cert-agent.timer
+        file_info:
+          mode: 0644
+      - src: packaging/vault-cert-agent@.service
+        dst: /usr/lib/systemd/system/vault-cert-agent@.service
+        file_info:
+          mode: 0644
+      - src: packaging/vault-cert-agent@.timer
+        dst: /usr/lib/systemd/system/vault-cert-agent@.timer
         file_info:
           mode: 0644
       - src: packaging/config.example.hcl

@@ -1,0 +1,38 @@
+[Unit]
+Description=Renew TLS material from Vault (instance %i)
+Documentation=https://github.com/ophymx/vault-cert-agent
+# network-online ensures DNS + routing are usable before the Vault
+# round-trip. Without it the first post-boot run can race the network.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Per-instance config + AppRole credentials live in their own
+# subdirectory so multiple instances on the same host don't share
+# secrets or trample each other's config:
+#   /etc/vault-cert-agent/%i/config.hcl
+#   /etc/vault-cert-agent/%i/role_id
+#   /etc/vault-cert-agent/%i/secret_id
+ExecStart=/usr/sbin/vault-cert-agent -config /etc/vault-cert-agent/%i/config.hcl
+User=root
+Group=root
+TimeoutStartSec=120s
+
+# ─── Sandboxing ──────────────────────────────────────────────────
+# Mirrors the non-templated unit; see vault-cert-agent.service for
+# the rationale + which directives were deliberately omitted.
+ProtectSystem=true
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+NoNewPrivileges=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+SystemCallArchitectures=native
