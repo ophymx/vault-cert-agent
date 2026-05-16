@@ -9,10 +9,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 	"time"
 
 	vaultapi "github.com/hashicorp/vault/api"
@@ -109,8 +111,28 @@ func (c *Client) login(ctx context.Context, loginPath, roleID, secretID string) 
 	return nil
 }
 
+// readSecret loads an AppRole credential file (role_id or secret_id).
+// Refuses to read if any group/other bits are set or if path is a
+// symlink — both would mean the AppRole identity is leaking outside
+// the agent's trust boundary, and silently accepting that turns a
+// misconfig into a credential disclosure.
 func readSecret(path string) (string, error) {
-	b, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s is not a regular file (mode %s)", path, info.Mode())
+	}
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return "", fmt.Errorf("%s has mode %o; expected no group/other access (use 0600)", path, perm)
+	}
+	b, err := io.ReadAll(f)
 	if err != nil {
 		return "", err
 	}

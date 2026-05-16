@@ -166,6 +166,47 @@ func TestClient_RetriesOnNetworkError(t *testing.T) {
 	}
 }
 
+func TestNewClient_RefusesWorldReadableSecretFile(t *testing.T) {
+	srv := httptest.NewServer(loginHandler(t))
+	t.Cleanup(srv.Close)
+
+	cfg := writeCreds(t, srv.URL)
+	// Loosen permissions on secret_id — agent should refuse rather
+	// than silently authenticate with a credential the world can read.
+	if err := os.Chmod(cfg.SecretIDFile, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewClient(context.Background(), cfg, testLogger(t))
+	if err == nil {
+		t.Fatal("expected error when secret_id is world-readable")
+	}
+	if !strings.Contains(err.Error(), "mode") {
+		t.Errorf("error should mention mode: %v", err)
+	}
+}
+
+func TestNewClient_RefusesSymlinkedSecretFile(t *testing.T) {
+	srv := httptest.NewServer(loginHandler(t))
+	t.Cleanup(srv.Close)
+
+	cfg := writeCreds(t, srv.URL)
+	// Replace role_id with a symlink to a same-permission decoy. The
+	// O_NOFOLLOW open in readSecret refuses regardless of perms.
+	decoy := cfg.RoleIDFile + ".decoy"
+	if err := os.WriteFile(decoy, []byte("rid\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(cfg.RoleIDFile); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(decoy, cfg.RoleIDFile); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewClient(context.Background(), cfg, testLogger(t)); err == nil {
+		t.Fatal("expected error when role_id is a symlink")
+	}
+}
+
 func TestClient_GivesUpAfterRetry(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/"+testLoginPath, loginHandler(t))
