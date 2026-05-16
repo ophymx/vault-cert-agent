@@ -203,3 +203,7 @@ Release with changelog + checksums.
 ```
 go test ./...
 ```
+
+## License
+
+[MIT](LICENSE).
