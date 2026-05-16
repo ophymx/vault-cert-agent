@@ -33,7 +33,6 @@ archives:
     name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
-      - SPEC.md
       - LICENSE*
       - packaging/config.example.hcl
       - packaging/vault-cert-agent.service

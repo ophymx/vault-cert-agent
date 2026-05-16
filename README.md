@@ -4,9 +4,7 @@ A one-shot Go binary that fetches TLS material from HashiCorp Vault and
 writes it to disk for local consumers (postgres, haproxy, pgpool, etc.).
 Runs hourly under a systemd timer; skips work when certs are still fresh.
 
-Replaces two ansible-deployed bash scripts (`vault-pki-renew` and
-`vault-cert-renew`) with a single typed implementation. Design notes
-live in [`SPEC.md`](SPEC.md).
+Replaces a pair of bash renewers with a single typed implementation.
 
 ## Supported cert sources
 
