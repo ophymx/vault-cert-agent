@@ -60,15 +60,21 @@ func (m *Manager) Reload(ctx context.Context, cert config.CertConfig) error {
 	switch {
 	case len(cert.ReloadUnits) > 0:
 		return m.reloadSystemd(ctx, cert)
-	case cert.ReloadCommand != "":
-		return m.reloadShell(ctx, cert)
+	case len(cert.ReloadCommand) > 0:
+		return m.reloadExec(ctx, cert)
 	}
 	return nil
 }
 
-func (m *Manager) reloadShell(ctx context.Context, cert config.CertConfig) error {
+// reloadExec runs cert.ReloadCommand as a direct exec — argv[0] is
+// the executable, argv[1:] are its arguments. No shell. Operators
+// who want shell semantics can opt in by spelling out
+// `["/bin/sh", "-c", "..."]`, which keeps the inadvertent
+// metacharacter-injection footgun off the default path.
+func (m *Manager) reloadExec(ctx context.Context, cert config.CertConfig) error {
 	log := m.logger.With("cert", cert.Name)
-	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", cert.ReloadCommand)
+	argv := cert.ReloadCommand
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	out, err := cmd.CombinedOutput()
 	trimmed := strings.TrimSpace(string(out))
 	if len(out) > 0 {

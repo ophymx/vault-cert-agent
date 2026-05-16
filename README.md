@@ -72,7 +72,7 @@ cert "pg-db0" {
   format         = "split"
   owner          = "postgres:postgres"
   mode           = "0600"
-  reload_command = "systemctl try-reload-or-restart pg_agentd.service"
+  reload_command = ["systemctl", "try-reload-or-restart", "pg_agentd.service"]
 }
 ```
 
@@ -100,7 +100,7 @@ Each cert can specify exactly one of two reload styles (or neither):
 
 | field            | how it runs                                                                  |
 | ---------------- | ---------------------------------------------------------------------------- |
-| `reload_command` | shell, executed via `/bin/sh -c`. Same shape as the bash scripts it replaces. |
+| `reload_command` | argv list, executed directly. **No shell.** No word splitting, no `$VAR` expansion, no pipes — wrap in `["/bin/sh", "-c", "..."]` to opt in. |
 | `reload_units`   | list of systemd units, issued as a D-Bus job on the system bus.              |
 
 The systemd path goes through `org.freedesktop.systemd1` on the

@@ -97,7 +97,13 @@ type CertConfig struct {
 	// Reload action. At most one of ReloadCommand and ReloadUnits may
 	// be set. ReloadMethod (with defaults to DefaultReloadMethod) only
 	// applies to the ReloadUnits path.
-	ReloadCommand string   `hcl:"reload_command,optional"`
+	//
+	// ReloadCommand is an argv list, not a shell string: argv[0] is
+	// the executable, argv[1:] are arguments. There is no shell — no
+	// word splitting, no $variable expansion, no pipes. Operators who
+	// want shell behaviour must explicitly invoke /bin/sh:
+	//   reload_command = ["/bin/sh", "-c", "foo && bar"]
+	ReloadCommand []string `hcl:"reload_command,optional"`
 	ReloadUnits   []string `hcl:"reload_units,optional"`
 	ReloadMethod  string   `hcl:"reload_method,optional"`
 

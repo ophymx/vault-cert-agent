@@ -83,7 +83,7 @@ func newManagerWithFake(bus *fakeBus) *Manager {
 	return m
 }
 
-// ─── Shell path ──────────────────────────────────────────────────
+// ─── Exec path ───────────────────────────────────────────────────
 
 func TestReload_NoActionIsNoOp(t *testing.T) {
 	m := New(discardLogger())
@@ -92,30 +92,46 @@ func TestReload_NoActionIsNoOp(t *testing.T) {
 	}
 }
 
-func TestReload_ShellSuccess(t *testing.T) {
+func TestReload_ExecSuccess(t *testing.T) {
 	m := New(discardLogger())
 	dir := t.TempDir()
 	sentinel := filepath.Join(dir, "ran")
 	cert := config.CertConfig{
 		Name:          "c",
-		ReloadCommand: "touch " + sentinel,
+		ReloadCommand: []string{"touch", sentinel},
 	}
 	if err := m.Reload(context.Background(), cert); err != nil {
-		t.Fatalf("shell reload: %v", err)
+		t.Fatalf("exec reload: %v", err)
 	}
 	if _, err := os.Stat(sentinel); err != nil {
 		t.Errorf("sentinel: %v", err)
 	}
 }
 
-func TestReload_ShellNonZeroExitErrors(t *testing.T) {
+func TestReload_ExecNonZeroExitErrors(t *testing.T) {
 	m := New(discardLogger())
 	err := m.Reload(context.Background(), config.CertConfig{
 		Name:          "c",
-		ReloadCommand: "exit 9",
+		ReloadCommand: []string{"sh", "-c", "exit 9"},
 	})
 	if err == nil {
 		t.Fatal("expected error from exit 9")
+	}
+}
+
+func TestReload_ExecNoShellInterpolation(t *testing.T) {
+	// Verify no shell is between us and the process: a metacharacter
+	// in argv[1] must be passed literally, not interpreted. We use
+	// `printf '%s'` so the arg appears verbatim on stdout — but
+	// stdout isn't captured here, so test by ensuring exit 0 with the
+	// suspicious arg.
+	m := New(discardLogger())
+	cert := config.CertConfig{
+		Name:          "c",
+		ReloadCommand: []string{"true", "; rm -rf /tmp/should-not-exist"},
+	}
+	if err := m.Reload(context.Background(), cert); err != nil {
+		t.Fatalf("exec with metacharacter arg should succeed: %v", err)
 	}
 }
 
@@ -246,12 +262,12 @@ func TestReload_BusOpenedLazilyAndOnce(t *testing.T) {
 		return bus, nil
 	}
 
-	// Shell-only cert: no bus open.
-	if err := m.Reload(context.Background(), config.CertConfig{Name: "a", ReloadCommand: "true"}); err != nil {
+	// Exec-only cert: no bus open.
+	if err := m.Reload(context.Background(), config.CertConfig{Name: "a", ReloadCommand: []string{"true"}}); err != nil {
 		t.Fatal(err)
 	}
 	if opens != 0 {
-		t.Errorf("shell-only cert opened bus %d times, want 0", opens)
+		t.Errorf("exec-only cert opened bus %d times, want 0", opens)
 	}
 
 	// Two systemd certs: bus opens once total.

@@ -403,7 +403,7 @@ func TestRun_ReloadFiresOnChangeAndCountsFailureOnNonZeroExit(t *testing.T) {
 		Format:        config.FormatSplit,
 		Owner:         testOwner(t),
 		Mode:          "0600",
-		ReloadCommand: "exit 7", // simulate a reload-script failure
+		ReloadCommand: []string{"sh", "-c", "exit 7"}, // simulate a reload-script failure
 	}})
 	if failures != 1 {
 		t.Errorf("reload exit 7 should count as failure, got %d failures", failures)
@@ -423,7 +423,6 @@ func TestRun_ReloadSkippedWhenContentUnchanged(t *testing.T) {
 
 	reloadDir := t.TempDir()
 	reloadSentinel := filepath.Join(reloadDir, "reloaded")
-	cmd := "touch " + reloadSentinel
 
 	cert := config.CertConfig{
 		Name:          "test",
@@ -432,7 +431,7 @@ func TestRun_ReloadSkippedWhenContentUnchanged(t *testing.T) {
 		Format:        config.FormatSplit,
 		Owner:         testOwner(t),
 		Mode:          "0600",
-		ReloadCommand: cmd,
+		ReloadCommand: []string{"touch", reloadSentinel},
 	}
 	// First run: fetch, write, reload (Changed=true).
 	if f := r.Run(context.Background(), []config.CertConfig{cert}); f != 0 {

@@ -41,14 +41,16 @@ cert "pg-agent-db0" {
   owner          = "postgres:postgres"
   mode           = "0600"
   # Reload action. Two options, mutually exclusive:
-  #   reload_command — shell, run via `/bin/sh -c`.
+  #   reload_command — argv list. Direct exec, no shell — no word
+  #                    splitting, no $variable expansion, no pipes.
+  #                    Wrap in /bin/sh -c explicitly if you need a shell.
   #   reload_units   — list of systemd units, talked to via the
   #                    polkit-authorised system bus (NOT the
   #                    /run/systemd/private root-bypass socket).
   # When using reload_units, reload_method defaults to
   # "try-reload-or-restart"; valid values: reload, restart, try-restart,
   # reload-or-restart, try-reload-or-restart.
-  reload_command = "systemctl try-reload-or-restart pg_agentd.service"
+  reload_command = ["systemctl", "try-reload-or-restart", "pg_agentd.service"]
   # reload_units  = ["pg_agentd.service"]
   # reload_method = "try-reload-or-restart"
 }
