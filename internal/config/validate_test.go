@@ -5,6 +5,52 @@ import (
 	"testing"
 )
 
+func baseConfig() *Config {
+	c := &Config{
+		Vault: VaultConfig{
+			URL:          "https://vault.example.com",
+			RoleIDFile:   "/etc/x/role_id",
+			SecretIDFile: "/etc/x/secret_id",
+		},
+		Renewal: &RenewalConfig{ThresholdFraction: 0.25},
+		Certs:   []CertConfig{baseCert()},
+	}
+	return c
+}
+
+func TestValidate_VaultURLMustBeHTTPS(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+	}{
+		{"http", "http://vault.example.com"},
+		{"no-scheme", "vault.example.com"},
+		{"missing-host", "https://"},
+		{"ftp", "ftp://vault.example.com"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := baseConfig()
+			c.Vault.URL = tc.url
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("expected error for url=%q", tc.url)
+			}
+			if !strings.Contains(err.Error(), "vault.url") {
+				t.Errorf("error should mention vault.url, got %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_VaultURLHTTPSAccepted(t *testing.T) {
+	c := baseConfig()
+	c.Vault.URL = "https://vault.example.com:8200"
+	if err := c.Validate(); err != nil {
+		t.Errorf("unexpected error for valid https url: %v", err)
+	}
+}
+
 func baseCert() CertConfig {
 	return CertConfig{
 		Name:        "c",
@@ -22,11 +68,20 @@ func baseCert() CertConfig {
 
 func TestValidate_BothReloadFieldsRejected(t *testing.T) {
 	c := baseCert()
-	c.ReloadCommand = "systemctl reload foo"
+	c.ReloadCommand = []string{"systemctl", "reload", "foo"}
 	c.ReloadUnits = []string{"foo.service"}
 	err := c.validate()
 	if err == nil || !strings.Contains(err.Error(), "at most one of reload_command and reload_units") {
 		t.Errorf("expected mutual-exclusion error, got %v", err)
+	}
+}
+
+func TestValidate_EmptyReloadCommandExecutableRejected(t *testing.T) {
+	c := baseCert()
+	c.ReloadCommand = []string{"   ", "arg"}
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "reload_command[0]") {
+		t.Errorf("expected empty-executable error, got %v", err)
 	}
 }
 
@@ -105,7 +160,7 @@ func TestValidate_ValidReloadConfigurationsAccepted(t *testing.T) {
 		mod  func(c *CertConfig)
 	}{
 		{"none", func(c *CertConfig) {}},
-		{"shell only", func(c *CertConfig) { c.ReloadCommand = "systemctl reload x" }},
+		{"exec only", func(c *CertConfig) { c.ReloadCommand = []string{"systemctl", "reload", "x"} }},
 		{"systemd default method", func(c *CertConfig) { c.ReloadUnits = []string{"x.service"} }},
 		{"systemd explicit method", func(c *CertConfig) {
 			c.ReloadUnits = []string{"x.service"}

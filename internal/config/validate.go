@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"slices"
 	"strconv"
@@ -14,6 +15,9 @@ import (
 func (c *Config) Validate() error {
 	if c.Vault.URL == "" {
 		return errors.New("vault.url is required")
+	}
+	if err := validateVaultURL(c.Vault.URL); err != nil {
+		return err
 	}
 	if c.Vault.RoleIDFile == "" {
 		return errors.New("vault.role_id_file is required")
@@ -115,7 +119,7 @@ func (c CertConfig) validate() error {
 }
 
 func (c CertConfig) validateReload() error {
-	if c.ReloadCommand != "" && len(c.ReloadUnits) > 0 {
+	if len(c.ReloadCommand) > 0 && len(c.ReloadUnits) > 0 {
 		return errors.New("set at most one of reload_command and reload_units")
 	}
 	if c.ReloadMethod != "" && len(c.ReloadUnits) == 0 {
@@ -124,6 +128,11 @@ func (c CertConfig) validateReload() error {
 	for i, u := range c.ReloadUnits {
 		if strings.TrimSpace(u) == "" {
 			return fmt.Errorf("reload_units[%d] is empty", i)
+		}
+	}
+	if len(c.ReloadCommand) > 0 {
+		if strings.TrimSpace(c.ReloadCommand[0]) == "" {
+			return errors.New("reload_command[0] (executable) is empty")
 		}
 	}
 	if c.ReloadMethod != "" && !validReloadMethod(c.ReloadMethod) {
@@ -156,6 +165,23 @@ var bundleOrders = []string{
 
 func validBundleOrder(name string) bool {
 	return slices.Contains(bundleOrders, name)
+}
+
+// validateVaultURL enforces https and a non-empty host. AppRole
+// secret_id rides the request body; permitting http would ship it
+// in plaintext.
+func validateVaultURL(raw string) error {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("vault.url: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf("vault.url must use https (got scheme %q in %q)", u.Scheme, raw)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("vault.url has no host: %q", raw)
+	}
+	return nil
 }
 
 // ParseOwner splits "user:group" into its two parts.
