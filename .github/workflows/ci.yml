@@ -46,3 +46,21 @@ jobs:
 
       - name: go test
         run: go test -race -count=1 ./...
+
+  goreleaser-check:
+    # Validates .goreleaser.yml on every PR so config drift fails
+    # here instead of at tag-push time.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: "~> v2"
+          args: check
