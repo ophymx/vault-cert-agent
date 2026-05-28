@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -140,32 +141,29 @@ func (r *Renewer) decide(cert config.CertConfig, log *slog.Logger) decision {
 		return decision{fetch: true, reason: "-force"}
 	}
 
+	// Every declared split slot must exist on disk with a shape that
+	// matches the slot's semantics. Catches the cases the leaf-TTL
+	// check on its own would skip indefinitely: a newly-declared slot
+	// whose file doesn't exist yet, or a slot whose filename was
+	// repurposed (cert <-> fullchain) so the on-disk shape is now
+	// wrong for the configured intent.
+	if d := auditOnDiskFiles(cert); d.fetch {
+		return d
+	}
+
 	leafPath := writer.ResolveLeafPath(cert)
 	if leafPath == "" {
 		// No leaf-bearing slot configured (e.g. files block declares
 		// only key/ca). Nothing to TTL-evaluate, so we always fetch.
 		return decision{fetch: true, reason: "no leaf-bearing file configured"}
 	}
-	leaf, hasChain, err := loadLeaf(leafPath)
+	leaf, err := loadLeaf(leafPath)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return decision{fetch: true, reason: "no existing cert at " + leafPath}
 	case err != nil:
 		log.Warn("existing cert unreadable; will refetch", "path", leafPath, "err", err)
 		return decision{fetch: true, reason: "existing cert unparseable"}
-	}
-
-	// On-disk shape vs configured slot. wantChain is true iff we
-	// resolved the leaf path through the fullchain fallback (no `cert`
-	// slot configured). A mismatch means the operator flipped the slot
-	// semantics on the same filename — refetch+rewrite so the file's
-	// layout catches up; otherwise the TTL check would skip indefinitely.
-	wantChain := cert.Files != nil && cert.Files.Cert == "" && cert.Files.Fullchain != ""
-	if wantChain && !hasChain {
-		return decision{fetch: true, reason: "fullchain slot configured but on-disk file has no chain"}
-	}
-	if !wantChain && hasChain {
-		return decision{fetch: true, reason: "cert slot configured but on-disk file contains a chain"}
 	}
 
 	now := r.now()
@@ -196,27 +194,83 @@ func (r *Renewer) decide(cert config.CertConfig, log *slog.Logger) decision {
 }
 
 // loadLeaf reads the first PEM block from path and parses it as an
-// X.509 certificate, and reports whether a subsequent CERTIFICATE
-// block exists. Works for split (leaf-alone file) and combined
+// X.509 certificate. Works for split (leaf-alone file) and combined
 // (leaf + chain + key concatenated) — the first block is always the
-// leaf in both layouts. hasChain lets the caller distinguish a
-// leaf-only file from a leaf+chain (fullchain or combined) without
-// fetching from the source.
-func loadLeaf(path string) (cert *x509.Certificate, hasChain bool, err error) {
+// leaf in both layouts.
+func loadLeaf(path string) (*x509.Certificate, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, false, err
+		return nil, err
 	}
-	block, rest := pem.Decode(raw)
+	block, _ := pem.Decode(raw)
 	if block == nil {
-		return nil, false, errors.New("no PEM block found")
+		return nil, errors.New("no PEM block found")
 	}
 	if block.Type != "CERTIFICATE" {
-		return nil, false, fmt.Errorf("first PEM block is %s, want CERTIFICATE", block.Type)
+		return nil, fmt.Errorf("first PEM block is %s, want CERTIFICATE", block.Type)
 	}
-	cert, err = x509.ParseCertificate(block.Bytes)
+	return x509.ParseCertificate(block.Bytes)
+}
+
+// auditOnDiskFiles verifies each declared split slot has a file on
+// disk whose shape matches the slot's semantics:
+//
+//	cert      — file exists, exactly one CERTIFICATE PEM block.
+//	fullchain — file exists, at least two CERTIFICATE PEM blocks.
+//	key, ca   — file exists.
+//
+// Returns fetch=true with a per-slot reason on the first failure.
+// A missing file or wrong shape catches operator config changes
+// (adding a slot, swapping cert <-> fullchain on the same filename)
+// that the leaf TTL check on its own would skip indefinitely.
+// Combined format is a single-file layout that owns its own
+// existence check downstream; the audit is split-only.
+func auditOnDiskFiles(cert config.CertConfig) decision {
+	if cert.Format != config.FormatSplit || cert.Files == nil {
+		return decision{}
+	}
+	f := cert.Files
+	slots := []struct {
+		name, filename string
+		check          func(path string) (ok bool, why string)
+	}{
+		{"cert", f.Cert, checkLeafOnly},
+		{"key", f.Key, checkExists},
+		{"ca", f.CA, checkExists},
+		{"fullchain", f.Fullchain, checkLeafPlusChain},
+	}
+	for _, s := range slots {
+		if s.filename == "" {
+			continue
+		}
+		path := filepath.Join(cert.Destination, s.filename)
+		if ok, why := s.check(path); !ok {
+			return decision{fetch: true, reason: s.name + " slot: " + why}
+		}
+	}
+	return decision{}
+}
+
+func checkExists(path string) (bool, string) {
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, "missing file " + path
+		}
+		return false, "stat " + path + ": " + err.Error()
+	}
+	return true, ""
+}
+
+// checkLeafOnly verifies path is a single CERTIFICATE PEM block —
+// the shape the writer emits for the cert slot.
+func checkLeafOnly(path string) (bool, string) {
+	raw, err := readForAudit(path)
 	if err != nil {
-		return nil, false, err
+		return false, err.Error()
+	}
+	block, rest := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return false, path + " has no leaf CERTIFICATE block"
 	}
 	for len(rest) > 0 {
 		var next *pem.Block
@@ -225,11 +279,47 @@ func loadLeaf(path string) (cert *x509.Certificate, hasChain bool, err error) {
 			break
 		}
 		if next.Type == "CERTIFICATE" {
-			hasChain = true
-			break
+			return false, path + " contains a chain (expected leaf only)"
 		}
 	}
-	return cert, hasChain, nil
+	return true, ""
+}
+
+// checkLeafPlusChain verifies path contains at least two CERTIFICATE
+// PEM blocks — the shape the writer emits for the fullchain slot.
+func checkLeafPlusChain(path string) (bool, string) {
+	raw, err := readForAudit(path)
+	if err != nil {
+		return false, err.Error()
+	}
+	block, rest := pem.Decode(raw)
+	if block == nil || block.Type != "CERTIFICATE" {
+		return false, path + " has no leaf CERTIFICATE block"
+	}
+	for len(rest) > 0 {
+		var next *pem.Block
+		next, rest = pem.Decode(rest)
+		if next == nil {
+			break
+		}
+		if next.Type == "CERTIFICATE" {
+			return true, ""
+		}
+	}
+	return false, path + " missing chain (only one CERTIFICATE block)"
+}
+
+// readForAudit normalises the "missing file" error message so audit
+// callers don't each re-format os.PathError text.
+func readForAudit(path string) ([]byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("missing file %s", path)
+		}
+		return nil, fmt.Errorf("read %s: %w", path, err)
+	}
+	return raw, nil
 }
 
 // altNamesDiffer reports whether the on-disk leaf's DNSNames don't

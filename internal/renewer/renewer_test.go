@@ -52,6 +52,30 @@ func (f *fakeSources) For(name string) (source.Source, error) {
 	return f.src, nil
 }
 
+// setupSupportingSplitFiles writes placeholder content for the key
+// and ca slots declared in cert.Files when they don't already exist
+// on disk. The audit treats key and ca as existence-only; tests that
+// focus on cert/fullchain/TTL/alt_names behavior call this to keep
+// the audit from short-circuiting on a missing support file.
+func setupSupportingSplitFiles(t *testing.T, cert config.CertConfig) {
+	t.Helper()
+	if cert.Files == nil {
+		return
+	}
+	for _, name := range []string{cert.Files.Key, cert.Files.CA} {
+		if name == "" {
+			continue
+		}
+		path := filepath.Join(cert.Destination, name)
+		if _, err := os.Stat(path); err == nil {
+			continue
+		}
+		if err := os.WriteFile(path, []byte("placeholder\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func writePEMCert(t *testing.T, path string, notBefore, notAfter time.Time, dnsNames []string) {
 	t.Helper()
 	writePEMCertBlocks(t, path, notBefore, notAfter, dnsNames, 1)
@@ -199,6 +223,7 @@ func TestDecide_FreshCertSkips(t *testing.T) {
 		Format:      config.FormatSplit,
 		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	if d := r.decide(cert, discardLogger()); d.fetch {
 		t.Errorf("fresh cert should skip, got fetch: %s", d.reason)
@@ -220,6 +245,7 @@ func TestDecide_FreshFullchainSlotSkips(t *testing.T) {
 		Format:      config.FormatSplit,
 		Files:       &config.FilesOverride{Key: "tls.key", Fullchain: "fullchain.pem"},
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	if d := r.decide(cert, discardLogger()); d.fetch {
 		t.Errorf("fresh fullchain should skip, got fetch: %s", d.reason)
@@ -241,6 +267,7 @@ func TestDecide_CertSlotConfiguredButOnDiskHasChainFetches(t *testing.T) {
 		Format:      config.FormatSplit,
 		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	d := r.decide(cert, discardLogger())
 	if !d.fetch {
@@ -248,6 +275,83 @@ func TestDecide_CertSlotConfiguredButOnDiskHasChainFetches(t *testing.T) {
 	}
 	if !strings.Contains(d.reason, "contains a chain") {
 		t.Errorf("expected shape-mismatch reason, got %q", d.reason)
+	}
+}
+
+func TestDecide_AddingFullchainAlongsideExistingCertFetches(t *testing.T) {
+	// Operator already has node.crt/node.key/ca.crt deployed and
+	// fresh; now adds `fullchain = "fullchain.pem"` to the files
+	// block. The new slot's file doesn't exist yet — audit must
+	// catch it instead of skipping on leaf TTL.
+	dir := t.TempDir()
+	now := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+	writePEMCert(t, filepath.Join(dir, "node.crt"),
+		now.AddDate(0, 0, -10), now.AddDate(0, 0, 90),
+		[]string{"host.example.com"})
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: dir,
+		Format:      config.FormatSplit,
+		Files: &config.FilesOverride{
+			Cert:      "node.crt",
+			Key:       "node.key",
+			CA:        "ca.crt",
+			Fullchain: "fullchain.pem",
+		},
+	}
+	setupSupportingSplitFiles(t, cert) // creates node.key + ca.crt; leaves fullchain.pem missing
+	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
+	d := r.decide(cert, discardLogger())
+	if !d.fetch {
+		t.Fatalf("missing new fullchain slot should fetch, got skip: %s", d.reason)
+	}
+	if !strings.Contains(d.reason, "fullchain slot") || !strings.Contains(d.reason, "missing file") {
+		t.Errorf("expected missing-fullchain reason, got %q", d.reason)
+	}
+}
+
+func TestDecide_MissingDeclaredSupportFileFetches(t *testing.T) {
+	// Each declared slot's file is required on disk. Drop a known
+	// support file and confirm the audit catches it slot-by-slot.
+	cases := []struct {
+		name         string
+		omit         string // basename to NOT pre-create
+		wantInReason string
+	}{
+		{"missing key", "node.key", "key slot"},
+		{"missing ca", "ca.crt", "ca slot"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			now := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+			writePEMCert(t, filepath.Join(dir, "node.crt"),
+				now.AddDate(0, 0, -10), now.AddDate(0, 0, 90),
+				[]string{"host.example.com"})
+			cert := config.CertConfig{
+				Source:      config.SourcePKI,
+				Destination: dir,
+				Format:      config.FormatSplit,
+				Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
+			}
+			// Selectively pre-create everything except the omitted file.
+			for _, name := range []string{"node.key", "ca.crt"} {
+				if name == tc.omit {
+					continue
+				}
+				if err := os.WriteFile(filepath.Join(dir, name), []byte("placeholder\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
+			d := r.decide(cert, discardLogger())
+			if !d.fetch {
+				t.Fatalf("missing %s should fetch, got skip: %s", tc.omit, d.reason)
+			}
+			if !strings.Contains(d.reason, tc.wantInReason) || !strings.Contains(d.reason, "missing file") {
+				t.Errorf("expected %s missing-file reason, got %q", tc.wantInReason, d.reason)
+			}
+		})
 	}
 }
 
@@ -266,12 +370,13 @@ func TestDecide_FullchainSlotConfiguredButOnDiskLeafOnlyFetches(t *testing.T) {
 		Format:      config.FormatSplit,
 		Files:       &config.FilesOverride{Key: "tls.key", Fullchain: "node.crt"},
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	d := r.decide(cert, discardLogger())
 	if !d.fetch {
 		t.Fatalf("shape mismatch should fetch, got skip: %s", d.reason)
 	}
-	if !strings.Contains(d.reason, "no chain") {
+	if !strings.Contains(d.reason, "missing chain") {
 		t.Errorf("expected shape-mismatch reason, got %q", d.reason)
 	}
 }
@@ -290,6 +395,7 @@ func TestDecide_StaleCertFetches(t *testing.T) {
 		Format:      config.FormatSplit,
 		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	if d := r.decide(cert, discardLogger()); !d.fetch {
 		t.Errorf("stale cert should fetch, got skip: %s", d.reason)
@@ -310,6 +416,7 @@ func TestDecide_ThresholdBoundaryIsInclusive(t *testing.T) {
 		Format:      config.FormatSplit,
 		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	d := r.decide(cert, discardLogger())
 	if !d.fetch {
@@ -330,6 +437,7 @@ func TestDecide_ExpiredCertFetches(t *testing.T) {
 		Format:      config.FormatSplit,
 		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	d := r.decide(cert, discardLogger())
 	if !d.fetch {
@@ -391,6 +499,7 @@ func TestDecide_LEAltNamesChangeFetchesEvenWhenFresh(t *testing.T) {
 		LEPath:      "letsencrypt/certs/dns-01/home/cloudflare/db.example.com",
 		AltNames:    []string{"db0.example.com", "db1.example.com", "db2.example.com"},
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	d := r.decide(cert, discardLogger())
 	if !d.fetch || d.reason != "alt_names changed" {
@@ -415,6 +524,7 @@ func TestDecide_LEMatchingAltNamesSkips(t *testing.T) {
 		LEPath:      "letsencrypt/certs/dns-01/home/cloudflare/db.example.com",
 		AltNames:    []string{"db0.example.com", "db1.example.com"},
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	if d := r.decide(cert, discardLogger()); d.fetch {
 		t.Errorf("matching alt_names should skip, got fetch: %s", d.reason)
@@ -438,6 +548,7 @@ func TestDecide_PKIAltNamesChangeNotAutoDetected(t *testing.T) {
 		CommonName:  "host.example.com",
 		AltNames:    []string{"other.example.com"}, // differs from on-disk
 	}
+	setupSupportingSplitFiles(t, cert)
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	if d := r.decide(cert, discardLogger()); d.fetch {
 		t.Errorf("PKI SAN change should NOT trigger auto-fetch (use -force), got: %s", d.reason)
