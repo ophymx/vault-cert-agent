@@ -59,6 +59,7 @@ func baseCert() CertConfig {
 		Format:      FormatSplit,
 		Owner:       "root:root",
 		Mode:        "0600",
+		Files:       &FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 		PKIMount:    "pki",
 		PKIRole:     "r",
 		CommonName:  "host.example.com",
@@ -125,6 +126,7 @@ func TestValidate_BundleOrderOnSplitRejected(t *testing.T) {
 func TestValidate_UnknownBundleOrderRejected(t *testing.T) {
 	c := baseCert()
 	c.Format = FormatCombined
+	c.Files = nil // combined rejects files block
 	c.Destination = "/etc/c/bundle.pem"
 	c.BundleOrder = "key-only"
 	err := c.validate()
@@ -145,12 +147,88 @@ func TestValidate_AllKnownBundleOrdersAccepted(t *testing.T) {
 		t.Run(order, func(t *testing.T) {
 			c := baseCert()
 			c.Format = FormatCombined
+			c.Files = nil // combined rejects files block
 			c.Destination = "/etc/c/bundle.pem"
 			c.BundleOrder = order
 			if err := c.validate(); err != nil {
 				t.Errorf("unexpected error for %q: %v", order, err)
 			}
 		})
+	}
+}
+
+func TestValidate_SplitRequiresFilesBlock(t *testing.T) {
+	c := baseCert()
+	c.Files = nil
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "files block is required") {
+		t.Errorf("expected files-required error, got %v", err)
+	}
+}
+
+func TestValidate_FilesBlockMustNameAtLeastOneSlot(t *testing.T) {
+	c := baseCert()
+	c.Files = &FilesOverride{}
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "at least one") {
+		t.Errorf("expected ≥1-slot error, got %v", err)
+	}
+}
+
+func TestValidate_FilesRejectsPathSeparators(t *testing.T) {
+	cases := []struct {
+		name  string
+		mod   func(*FilesOverride)
+		field string
+	}{
+		{"subdir", func(f *FilesOverride) { f.Cert = "sub/node.crt" }, "files.cert"},
+		{"absolute", func(f *FilesOverride) { f.Key = "/etc/elsewhere/node.key" }, "files.key"},
+		{"parent traversal", func(f *FilesOverride) { f.CA = ".." }, "files.ca"},
+		{"current dir", func(f *FilesOverride) { f.Fullchain = "." }, "files.fullchain"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := baseCert()
+			c.Files = &FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"}
+			tc.mod(c.Files)
+			err := c.validate()
+			if err == nil || !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("expected %s error, got %v", tc.field, err)
+			}
+		})
+	}
+}
+
+func TestValidate_FilesRejectsCollisions(t *testing.T) {
+	c := baseCert()
+	c.Files = &FilesOverride{
+		Cert:      "bundle.pem",
+		Key:       "key.pem",
+		Fullchain: "bundle.pem", // same as Cert
+	}
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "both resolve to") {
+		t.Errorf("expected collision error, got %v", err)
+	}
+}
+
+func TestValidate_FilesAcceptsPartialDeclarations(t *testing.T) {
+	// Only fullchain + key — the non-AIA-aware-client recipe.
+	c := baseCert()
+	c.Files = &FilesOverride{Key: "tls.key", Fullchain: "fullchain.pem"}
+	if err := c.validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestValidate_CombinedRejectsFilesBlock(t *testing.T) {
+	c := baseCert()
+	c.Format = FormatCombined
+	c.Destination = "/etc/c/bundle.pem"
+	// Files inherited from baseCert; should be rejected for combined.
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "files block is only valid with format=split") {
+		t.Errorf("expected combined-rejects-files error, got %v", err)
 	}
 }
 

@@ -71,13 +71,15 @@ func (c CertConfig) validate() error {
 	case "":
 		return errors.New("format is required")
 	case FormatSplit:
-		// any files override allowed
 		if c.BundleOrder != "" {
 			return errors.New("bundle_order only applies to format=combined")
 		}
+		if err := validateSplitFiles(c.Files); err != nil {
+			return err
+		}
 	case FormatCombined:
 		if c.Files != nil {
-			return errors.New("files override is only valid with format=split")
+			return errors.New("files block is only valid with format=split")
 		}
 		if c.BundleOrder != "" && !validBundleOrder(c.BundleOrder) {
 			return fmt.Errorf("unknown bundle_order %q (want one of %s)",
@@ -138,6 +140,59 @@ func (c CertConfig) validateReload() error {
 	if c.ReloadMethod != "" && !validReloadMethod(c.ReloadMethod) {
 		return fmt.Errorf("unknown reload_method %q (want one of %s)",
 			c.ReloadMethod, strings.Join(reloadMethods, ", "))
+	}
+	return nil
+}
+
+// validateSplitFiles enforces the explicit-declaration model: with
+// format=split the operator must list every file they want emitted.
+// No source-derived defaults; nothing implicit.
+//
+// Each value must be a plain basename — no `/`, no `..`, not absolute,
+// not empty. All values must be unique within the block (two slots
+// pointing at the same file would race their own writes).
+func validateSplitFiles(f *FilesOverride) error {
+	if f == nil {
+		return errors.New("files block is required for format=split (declare every file you want emitted)")
+	}
+	slots := []struct {
+		name, value string
+	}{
+		{"cert", f.Cert},
+		{"key", f.Key},
+		{"ca", f.CA},
+		{"fullchain", f.Fullchain},
+	}
+	seen := make(map[string]string, 4)
+	declared := 0
+	for _, s := range slots {
+		if s.value == "" {
+			continue
+		}
+		if err := validateBasename(s.value); err != nil {
+			return fmt.Errorf("files.%s: %w", s.name, err)
+		}
+		if prev, dup := seen[s.value]; dup {
+			return fmt.Errorf("files.%s and files.%s both resolve to %q",
+				prev, s.name, s.value)
+		}
+		seen[s.value] = s.name
+		declared++
+	}
+	if declared == 0 {
+		return errors.New("files block must declare at least one of cert/key/ca/fullchain")
+	}
+	return nil
+}
+
+// validateBasename rejects anything that isn't a single filename
+// segment under the cert's destination directory.
+func validateBasename(s string) error {
+	if strings.ContainsRune(s, '/') {
+		return fmt.Errorf("must be a plain filename (no path separators): %q", s)
+	}
+	if s == ".." || s == "." {
+		return fmt.Errorf("must be a plain filename, not a directory reference: %q", s)
 	}
 	return nil
 }

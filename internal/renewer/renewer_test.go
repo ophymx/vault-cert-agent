@@ -147,6 +147,7 @@ func TestDecide_NoExistingCertFetches(t *testing.T) {
 		Source:      config.SourcePKI,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, time.Now())
 	d := r.decide(cert, discardLogger())
@@ -167,6 +168,7 @@ func TestDecide_FreshCertSkips(t *testing.T) {
 		Source:      config.SourcePKI,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	if d := r.decide(cert, discardLogger()); d.fetch {
@@ -186,6 +188,7 @@ func TestDecide_StaleCertFetches(t *testing.T) {
 		Source:      config.SourcePKI,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	if d := r.decide(cert, discardLogger()); !d.fetch {
@@ -205,6 +208,7 @@ func TestDecide_ThresholdBoundaryIsInclusive(t *testing.T) {
 		Source:      config.SourcePKI,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	d := r.decide(cert, discardLogger())
@@ -224,6 +228,7 @@ func TestDecide_ExpiredCertFetches(t *testing.T) {
 		Source:      config.SourcePKI,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	d := r.decide(cert, discardLogger())
@@ -243,6 +248,7 @@ func TestDecide_ForceAlwaysFetches(t *testing.T) {
 		Source:      config.SourcePKI,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25, Force: true}, now)
 	d := r.decide(cert, discardLogger())
@@ -260,6 +266,7 @@ func TestDecide_CorruptCertFetches(t *testing.T) {
 		Source:      config.SourcePKI,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, time.Now())
 	if d := r.decide(cert, discardLogger()); !d.fetch {
@@ -280,6 +287,7 @@ func TestDecide_LEAltNamesChangeFetchesEvenWhenFresh(t *testing.T) {
 		Source:      config.SourceLetsencrypt,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "tls.crt", Key: "tls.key", CA: "ca.crt"},
 		LEPath:      "letsencrypt/certs/dns-01/home/cloudflare/db.example.com",
 		AltNames:    []string{"db0.example.com", "db1.example.com", "db2.example.com"},
 	}
@@ -303,6 +311,7 @@ func TestDecide_LEMatchingAltNamesSkips(t *testing.T) {
 		Source:      config.SourceLetsencrypt,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "tls.crt", Key: "tls.key", CA: "ca.crt"},
 		LEPath:      "letsencrypt/certs/dns-01/home/cloudflare/db.example.com",
 		AltNames:    []string{"db0.example.com", "db1.example.com"},
 	}
@@ -325,6 +334,7 @@ func TestDecide_PKIAltNamesChangeNotAutoDetected(t *testing.T) {
 		Source:      config.SourcePKI,
 		Destination: dir,
 		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 		CommonName:  "host.example.com",
 		AltNames:    []string{"other.example.com"}, // differs from on-disk
 	}
@@ -355,6 +365,7 @@ func TestRun_FetchAndWriteSucceeds(t *testing.T) {
 		Format:      config.FormatSplit,
 		Owner:       testOwner(t),
 		Mode:        "0600",
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}})
 	if failures != 0 {
 		t.Errorf("failures: got %d, want 0", failures)
@@ -379,6 +390,7 @@ func TestRun_DryRunSkipsFetchAndWrite(t *testing.T) {
 		Format:      config.FormatSplit,
 		Owner:       testOwner(t),
 		Mode:        "0600",
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}})
 	if failures != 0 {
 		t.Errorf("failures: got %d, want 0", failures)
@@ -404,6 +416,7 @@ func TestRun_ReloadFiresOnChangeAndCountsFailureOnNonZeroExit(t *testing.T) {
 		Owner:         testOwner(t),
 		Mode:          "0600",
 		ReloadCommand: []string{"sh", "-c", "exit 7"}, // simulate a reload-script failure
+		Files:         &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}})
 	if failures != 1 {
 		t.Errorf("reload exit 7 should count as failure, got %d failures", failures)
@@ -432,6 +445,7 @@ func TestRun_ReloadSkippedWhenContentUnchanged(t *testing.T) {
 		Owner:         testOwner(t),
 		Mode:          "0600",
 		ReloadCommand: []string{"touch", reloadSentinel},
+		Files:         &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
 	}
 	// First run: fetch, write, reload (Changed=true).
 	if f := r.Run(context.Background(), []config.CertConfig{cert}); f != 0 {
@@ -467,9 +481,11 @@ func TestRun_PerCertFailureDoesNotAbortLoop(t *testing.T) {
 	}}
 	r := New(srcs, writer.New(discardLogger()), reload.New(discardLogger()), discardLogger(), Options{ThresholdFraction: 0.25, Force: true})
 
+	pkiFiles := &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"}
+	leFiles := &config.FilesOverride{Cert: "tls.crt", Key: "tls.key", CA: "ca.crt"}
 	failures := r.Run(context.Background(), []config.CertConfig{
-		{Name: "a", Source: config.SourcePKI, Destination: t.TempDir(), Format: config.FormatSplit, Owner: testOwner(t), Mode: "0600"},
-		{Name: "b", Source: config.SourceLetsencrypt, Destination: good, Format: config.FormatSplit, Owner: testOwner(t), Mode: "0600"},
+		{Name: "a", Source: config.SourcePKI, Destination: t.TempDir(), Format: config.FormatSplit, Owner: testOwner(t), Mode: "0600", Files: pkiFiles},
+		{Name: "b", Source: config.SourceLetsencrypt, Destination: good, Format: config.FormatSplit, Owner: testOwner(t), Mode: "0600", Files: leFiles},
 	})
 	if failures != 1 {
 		t.Errorf("expected 1 failure (the failing cert), got %d", failures)

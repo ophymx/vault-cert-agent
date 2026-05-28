@@ -141,6 +141,11 @@ func (r *Renewer) decide(cert config.CertConfig, log *slog.Logger) decision {
 	}
 
 	leafPath := writer.ResolveLeafPath(cert)
+	if leafPath == "" {
+		// No leaf-bearing slot configured (e.g. files block declares
+		// only key/ca). Nothing to TTL-evaluate, so we always fetch.
+		return decision{fetch: true, reason: "no leaf-bearing file configured"}
+	}
 	leaf, err := loadLeaf(leafPath)
 	switch {
 	case errors.Is(err, os.ErrNotExist):

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -32,6 +33,17 @@ func newWriter() *Writer {
 	return New(slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
+// pkiFiles is the conventional set of split filenames for a PKI cert
+// in tests — leaf, key, and chain together. Mirrors what an operator
+// would put in HCL after the explicit-declaration switch.
+func pkiFiles() *config.FilesOverride {
+	return &config.FilesOverride{
+		Cert: "node.crt",
+		Key:  "node.key",
+		CA:   "ca.crt",
+	}
+}
+
 func sampleMaterial() *source.Material {
 	return &source.Material{
 		Cert: []byte("-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----\n"),
@@ -53,6 +65,7 @@ func TestWrite_Split_FirstRunCreatesThreeFiles(t *testing.T) {
 		Format:      config.FormatSplit,
 		Owner:       testOwner(t),
 		Mode:        "0640",
+		Files:       pkiFiles(),
 	}
 
 	res, err := newWriter().Write(m, cert)
@@ -99,6 +112,7 @@ func TestWrite_Split_NoChangeButFixesStaleMode(t *testing.T) {
 		Format:      config.FormatSplit,
 		Owner:       testOwner(t),
 		Mode:        "0600",
+		Files:       pkiFiles(),
 	}
 	w := newWriter()
 
@@ -137,6 +151,7 @@ func TestWrite_Split_ContentChangeReportsChanged(t *testing.T) {
 		Format:      config.FormatSplit,
 		Owner:       testOwner(t),
 		Mode:        "0600",
+		Files:       pkiFiles(),
 	}
 	w := newWriter()
 	if _, err := w.Write(sampleMaterial(), cert); err != nil {
@@ -264,7 +279,7 @@ func TestWrite_Combined_CreatesParentDir(t *testing.T) {
 	}
 }
 
-func TestWrite_Split_FilesOverrideBeatsDefaults(t *testing.T) {
+func TestWrite_Split_CustomFilenamesEmitOnlyTheNamedSlots(t *testing.T) {
 	dir := t.TempDir()
 	cert := config.CertConfig{
 		Source:      config.SourcePKI,
@@ -275,39 +290,119 @@ func TestWrite_Split_FilesOverrideBeatsDefaults(t *testing.T) {
 		Files: &config.FilesOverride{
 			Cert: "server.pem",
 			Key:  "server.key",
-			// CA left empty → falls back to default "ca.crt".
+			CA:   "chain.pem",
 		},
 	}
 
 	if _, err := newWriter().Write(sampleMaterial(), cert); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"server.pem", "server.key", "ca.crt"} {
+	for _, name := range []string{"server.pem", "server.key", "chain.pem"} {
 		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
 			t.Errorf("expected %s: %v", name, err)
 		}
 	}
-	// And the default names must NOT exist alongside.
-	if _, err := os.Stat(filepath.Join(dir, "node.crt")); !os.IsNotExist(err) {
-		t.Errorf("node.crt should not exist when override is set")
+	// No source-derived defaults: legacy names must NOT appear.
+	for _, ghost := range []string{"node.crt", "node.key", "ca.crt", "tls.crt", "tls.key"} {
+		if _, err := os.Stat(filepath.Join(dir, ghost)); !os.IsNotExist(err) {
+			t.Errorf("%s should not exist under explicit-declaration model", ghost)
+		}
 	}
 }
 
-func TestWrite_Split_LetsencryptUsesTLSDefaults(t *testing.T) {
+func TestWrite_Split_OnlyDeclaredSlotsAreWritten(t *testing.T) {
+	// Subset declaration: just fullchain + key. cert and ca must not
+	// be emitted (no leaf-only file, no chain-only file).
 	dir := t.TempDir()
 	cert := config.CertConfig{
-		Source:      config.SourceLetsencrypt,
+		Source:      config.SourcePKI,
 		Destination: dir,
 		Format:      config.FormatSplit,
 		Owner:       testOwner(t),
 		Mode:        "0600",
+		Files: &config.FilesOverride{
+			Key:       "tls.key",
+			Fullchain: "fullchain.pem",
+		},
+	}
+	res, err := newWriter().Write(sampleMaterial(), cert)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Paths) != 2 {
+		t.Errorf("expected 2 written paths, got %d (%v)", len(res.Paths), res.Paths)
+	}
+	for _, name := range []string{"tls.key", "fullchain.pem"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Errorf("expected %s: %v", name, err)
+		}
+	}
+	for _, ghost := range []string{"node.crt", "ca.crt", "tls.crt"} {
+		if _, err := os.Stat(filepath.Join(dir, ghost)); !os.IsNotExist(err) {
+			t.Errorf("%s should not exist when not declared", ghost)
+		}
+	}
+}
+
+func TestWrite_Split_FullchainOptInWritesLeafPlusChain(t *testing.T) {
+	dir := t.TempDir()
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: dir,
+		Format:      config.FormatSplit,
+		Owner:       testOwner(t),
+		Mode:        "0640",
+		Files:       &config.FilesOverride{Fullchain: "fullchain.pem"},
+	}
+	res, err := newWriter().Write(sampleMaterial(), cert)
+	if err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	fullchainPath := filepath.Join(dir, "fullchain.pem")
+	if !slices.Contains(res.Paths, fullchainPath) {
+		t.Errorf("Paths missing fullchain entry: %v", res.Paths)
+	}
+	got, err := os.ReadFile(fullchainPath)
+	if err != nil {
+		t.Fatalf("read fullchain: %v", err)
+	}
+	leafIdx := strings.Index(string(got), "leaf")
+	intIdx := strings.Index(string(got), "int")
+	rootIdx := strings.Index(string(got), "root")
+	if !(leafIdx >= 0 && leafIdx < intIdx && intIdx < rootIdx) {
+		t.Errorf("wrong fullchain order: leaf=%d int=%d root=%d\nfile: %q",
+			leafIdx, intIdx, rootIdx, got)
+	}
+	if strings.Contains(string(got), "PRIVATE KEY") {
+		t.Errorf("fullchain must not include the private key: %q", got)
+	}
+	info, err := os.Stat(fullchainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o640 {
+		t.Errorf("fullchain mode: got %o, want 0640", info.Mode().Perm())
+	}
+}
+
+func TestWrite_Split_NoFullchainWhenUndeclared(t *testing.T) {
+	// A files block that names cert/key/ca but not fullchain must not
+	// produce a fullchain file.
+	dir := t.TempDir()
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: dir,
+		Format:      config.FormatSplit,
+		Owner:       testOwner(t),
+		Mode:        "0600",
+		Files:       pkiFiles(),
 	}
 	if _, err := newWriter().Write(sampleMaterial(), cert); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{"tls.crt", "tls.key", "ca.crt"} {
-		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
-			t.Errorf("expected %s: %v", name, err)
+	for _, name := range []string{"fullchain.pem", "fullchain.crt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s should not exist without opt-in (err=%v)", name, err)
 		}
 	}
 }
@@ -319,22 +414,35 @@ func TestResolveLeafPath(t *testing.T) {
 		want string
 	}{
 		{
-			name: "split pki default",
-			cert: config.CertConfig{Source: config.SourcePKI, Format: config.FormatSplit, Destination: "/tls"},
-			want: "/tls/node.crt",
-		},
-		{
-			name: "split le default",
-			cert: config.CertConfig{Source: config.SourceLetsencrypt, Format: config.FormatSplit, Destination: "/tls"},
-			want: "/tls/tls.crt",
-		},
-		{
-			name: "split override",
+			name: "split cert slot",
 			cert: config.CertConfig{
 				Source: config.SourcePKI, Format: config.FormatSplit, Destination: "/tls",
-				Files: &config.FilesOverride{Cert: "server.pem"},
+				Files: &config.FilesOverride{Cert: "server.pem", Key: "server.key"},
 			},
 			want: "/tls/server.pem",
+		},
+		{
+			name: "split falls back to fullchain when cert absent",
+			cert: config.CertConfig{
+				Source: config.SourcePKI, Format: config.FormatSplit, Destination: "/tls",
+				Files: &config.FilesOverride{Key: "tls.key", Fullchain: "fullchain.pem"},
+			},
+			want: "/tls/fullchain.pem",
+		},
+		{
+			name: "split with neither cert nor fullchain returns empty",
+			cert: config.CertConfig{
+				Source: config.SourcePKI, Format: config.FormatSplit, Destination: "/tls",
+				Files: &config.FilesOverride{Key: "tls.key", CA: "ca.crt"},
+			},
+			want: "",
+		},
+		{
+			name: "split with nil Files returns empty",
+			cert: config.CertConfig{
+				Source: config.SourcePKI, Format: config.FormatSplit, Destination: "/tls",
+			},
+			want: "",
 		},
 		{
 			name: "combined",
@@ -362,6 +470,7 @@ func TestWrite_Split_RefusesSymlinkAtDestination(t *testing.T) {
 		Format:      config.FormatSplit,
 		Owner:       testOwner(t),
 		Mode:        "0600",
+		Files:       pkiFiles(),
 	}
 	w := newWriter()
 	if _, err := w.Write(sampleMaterial(), cert); err != nil {
@@ -432,6 +541,7 @@ func TestWrite_AtomicWriteLeavesNoTempFile(t *testing.T) {
 		Format:      config.FormatSplit,
 		Owner:       testOwner(t),
 		Mode:        "0600",
+		Files:       pkiFiles(),
 	}
 	if _, err := newWriter().Write(sampleMaterial(), cert); err != nil {
 		t.Fatal(err)

@@ -31,13 +31,21 @@ cert "pg-agent-db0" {
   ttl            = "24h"
   destination    = "/etc/pg_agent/tls"
   format         = "split"
-  # Per-file name overrides (optional, only with format=split).
-  # Defaults for source=pki: node.crt / node.key / ca.crt.
-  # files {
-  #   cert = "node.crt"
-  #   key  = "node.key"
-  #   ca   = "ca.crt"
-  # }
+  # The files block is required for format=split. Name only the files
+  # you want emitted — anything you don't name is not written. Each
+  # value is a plain basename, resolved under `destination`.
+  #
+  # Available slots:
+  #   cert       — leaf cert only
+  #   key        — private key
+  #   ca         — chain (intermediate(s) + root the source returns)
+  #   fullchain  — leaf + chain concatenated; what TLS servers serve
+  #                to non-AIA-aware clients (postgres, older JVMs)
+  files {
+    cert = "node.crt"
+    key  = "node.key"
+    ca   = "ca.crt"
+  }
   owner          = "postgres:postgres"
   mode           = "0600"
   # Reload action. Two options, mutually exclusive:
@@ -70,7 +78,13 @@ cert "db-cluster-le" {
   ]
   destination    = "/etc/pgpool2/tls"
   format         = "split"
-  # Defaults for source=letsencrypt: tls.crt / tls.key / ca.crt.
+  # For a postgres/pgpool consumer that won't follow AIA to fetch the
+  # intermediate, emit the fullchain (leaf + chain) as the cert file.
+  # No leaf-only or ca files are written here.
+  files {
+    key       = "tls.key"
+    fullchain = "fullchain.pem"
+  }
   owner          = "postgres:postgres"
   mode           = "0600"
   # Same reload-action options as above; this cert uses the systemd

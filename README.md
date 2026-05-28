@@ -85,6 +85,11 @@ cert "pg-db0" {
   ttl            = "24h"
   destination    = "/etc/pg_agent/tls"
   format         = "split"
+  files {
+    cert = "node.crt"
+    key  = "node.key"
+    ca   = "ca.crt"
+  }
   owner          = "postgres:postgres"
   mode           = "0600"
   reload_command = ["systemctl", "try-reload-or-restart", "pg_agentd.service"]
@@ -140,6 +145,45 @@ the leaf cert, the chain, and the private key concatenated. The
 | `chain-key-cert`   | chain, key, leaf        |                         |
 
 `bundle_order` is rejected with `format = "split"`.
+
+### Split format: declaring output files
+
+`format = "split"` requires a `files { ... }` block. Every file you
+want emitted must be named explicitly — unnamed slots are not
+written, and there are no source-derived defaults. The available
+slots:
+
+| slot        | content                                          |
+| ----------- | ------------------------------------------------ |
+| `cert`      | leaf cert only                                   |
+| `key`       | private key                                      |
+| `ca`        | chain (intermediate(s) + root from the source)   |
+| `fullchain` | leaf + chain concatenated (no key)               |
+
+Each value is a plain basename — no path separators, no `..`, no
+absolute paths. All values must be unique (a two-slot collision is a
+config error). The block must declare at least one slot.
+
+Typical declarations:
+
+```hcl
+# Conventional split layout for a postgres consumer.
+files {
+  cert = "node.crt"
+  key  = "node.key"
+  ca   = "ca.crt"
+}
+
+# Non-AIA-aware client (postgres, older JVMs): the TLS server needs to
+# present the intermediate itself, so emit a fullchain and skip the
+# leaf-only and ca files entirely.
+files {
+  key       = "tls.key"
+  fullchain = "fullchain.pem"
+}
+```
+
+The same `owner` / `mode` apply to every file the block produces.
 
 ### Reload action
 

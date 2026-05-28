@@ -118,12 +118,14 @@ type CertConfig struct {
 	LEPath string `hcl:"le_path,optional"`
 }
 
-// FilesOverride lets a cert override the three split-format filenames.
-// Absent block = use the source's default names.
+// FilesOverride lets a cert override the split-format filenames.
+// Absent block = use the source's default names; Fullchain is opt-in
+// (no default name — empty means no fullchain file is written).
 type FilesOverride struct {
-	Cert string `hcl:"cert,optional"`
-	Key  string `hcl:"key,optional"`
-	CA   string `hcl:"ca,optional"`
+	Cert      string `hcl:"cert,optional"`
+	Key       string `hcl:"key,optional"`
+	CA        string `hcl:"ca,optional"`
+	Fullchain string `hcl:"fullchain,optional"`
 }
 
 // Load reads, decodes, applies defaults, and validates a config file.

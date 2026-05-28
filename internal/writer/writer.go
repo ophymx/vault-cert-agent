@@ -57,42 +57,80 @@ func (w *Writer) Write(material *source.Material, cert config.CertConfig) (*Resu
 	}
 }
 
-// ResolveLeafPath returns the on-disk path where the leaf cert lives
-// for the given cert config. The renewer uses this to compute the
-// existing cert's remaining lifetime before deciding to fetch.
+// ResolveLeafPath returns the on-disk path containing the leaf cert
+// for the given cert config — what the renewer reads to compute
+// remaining lifetime before deciding to fetch.
+//
+// For split format we prefer the `cert` slot (leaf-only), falling
+// back to `fullchain` (leaf is the first PEM block, which loadLeaf
+// in the renewer reads). Returns "" when neither is configured; the
+// renewer treats that as "no on-disk leaf to evaluate."
 func ResolveLeafPath(cert config.CertConfig) string {
 	switch cert.Format {
 	case config.FormatSplit:
-		certPath, _, _ := resolveSplitPaths(cert)
-		return certPath
+		if cert.Files == nil {
+			return ""
+		}
+		if cert.Files.Cert != "" {
+			return filepath.Join(cert.Destination, cert.Files.Cert)
+		}
+		if cert.Files.Fullchain != "" {
+			return filepath.Join(cert.Destination, cert.Files.Fullchain)
+		}
+		return ""
 	case config.FormatCombined:
 		return cert.Destination
 	}
 	return ""
 }
 
+// splitFile pairs a configured filename with the bytes that slot
+// should hold. Slots whose filename is empty are filtered out.
+type splitFile struct {
+	path    string
+	content []byte
+}
+
 func (w *Writer) writeSplit(m *source.Material, cert config.CertConfig, mode os.FileMode, uid, gid int) (*Result, error) {
-	certPath, keyPath, caPath := resolveSplitPaths(cert)
+	// Validation has already enforced that cert.Files is non-nil with
+	// at least one slot declared, and that no two slots collide.
 	if err := os.MkdirAll(cert.Destination, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", cert.Destination, err)
 	}
+	f := cert.Files
+	files := splitFiles(cert.Destination, f, m)
 	out := &Result{}
-	for _, f := range []struct {
-		path    string
-		content []byte
-	}{
-		{certPath, m.Cert},
-		{keyPath, m.Key},
-		{caPath, m.CA},
-	} {
-		changed, err := w.commitFile(f.path, f.content, mode, uid, gid)
+	for _, sf := range files {
+		changed, err := w.commitFile(sf.path, sf.content, mode, uid, gid)
 		if err != nil {
 			return nil, err
 		}
 		out.Changed = out.Changed || changed
-		out.Paths = append(out.Paths, f.path)
+		out.Paths = append(out.Paths, sf.path)
 	}
 	return out, nil
+}
+
+func splitFiles(dest string, f *config.FilesOverride, m *source.Material) []splitFile {
+	files := make([]splitFile, 0, 4)
+	add := func(name string, content []byte) {
+		if name == "" {
+			return
+		}
+		files = append(files, splitFile{filepath.Join(dest, name), content})
+	}
+	add(f.Cert, m.Cert)
+	add(f.Key, m.Key)
+	add(f.CA, m.CA)
+	if f.Fullchain != "" {
+		// Leaf + chain concatenated. ensureNewline at source.Material
+		// boundaries guarantees a separating newline between blocks.
+		fc := make([]byte, 0, len(m.Cert)+len(m.CA))
+		fc = append(fc, m.Cert...)
+		fc = append(fc, m.CA...)
+		add(f.Fullchain, fc)
+	}
+	return files
 }
 
 func (w *Writer) writeCombined(m *source.Material, cert config.CertConfig, mode os.FileMode, uid, gid int) (*Result, error) {
@@ -319,33 +357,4 @@ func lookupOwner(userName, groupName string) (int, int, error) {
 		return 0, 0, fmt.Errorf("parse gid %q: %w", g.Gid, err)
 	}
 	return uid, gid, nil
-}
-
-// splitNames is the per-source default filename triple for the
-// split-format layout. Operators can override any of the three via
-// the per-cert `files` block; an empty override falls back to the
-// default here.
-type splitNames struct{ cert, key, ca string }
-
-var splitDefaults = map[string]splitNames{
-	config.SourcePKI:         {cert: "node.crt", key: "node.key", ca: "ca.crt"},
-	config.SourceLetsencrypt: {cert: "tls.crt", key: "tls.key", ca: "ca.crt"},
-}
-
-func resolveSplitPaths(c config.CertConfig) (certPath, keyPath, caPath string) {
-	n := splitDefaults[c.Source]
-	if c.Files != nil {
-		if c.Files.Cert != "" {
-			n.cert = c.Files.Cert
-		}
-		if c.Files.Key != "" {
-			n.key = c.Files.Key
-		}
-		if c.Files.CA != "" {
-			n.ca = c.Files.CA
-		}
-	}
-	return filepath.Join(c.Destination, n.cert),
-		filepath.Join(c.Destination, n.key),
-		filepath.Join(c.Destination, n.ca)
 }
