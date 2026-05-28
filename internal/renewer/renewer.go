@@ -146,13 +146,26 @@ func (r *Renewer) decide(cert config.CertConfig, log *slog.Logger) decision {
 		// only key/ca). Nothing to TTL-evaluate, so we always fetch.
 		return decision{fetch: true, reason: "no leaf-bearing file configured"}
 	}
-	leaf, err := loadLeaf(leafPath)
+	leaf, hasChain, err := loadLeaf(leafPath)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
 		return decision{fetch: true, reason: "no existing cert at " + leafPath}
 	case err != nil:
 		log.Warn("existing cert unreadable; will refetch", "path", leafPath, "err", err)
 		return decision{fetch: true, reason: "existing cert unparseable"}
+	}
+
+	// On-disk shape vs configured slot. wantChain is true iff we
+	// resolved the leaf path through the fullchain fallback (no `cert`
+	// slot configured). A mismatch means the operator flipped the slot
+	// semantics on the same filename — refetch+rewrite so the file's
+	// layout catches up; otherwise the TTL check would skip indefinitely.
+	wantChain := cert.Files != nil && cert.Files.Cert == "" && cert.Files.Fullchain != ""
+	if wantChain && !hasChain {
+		return decision{fetch: true, reason: "fullchain slot configured but on-disk file has no chain"}
+	}
+	if !wantChain && hasChain {
+		return decision{fetch: true, reason: "cert slot configured but on-disk file contains a chain"}
 	}
 
 	now := r.now()
@@ -183,22 +196,40 @@ func (r *Renewer) decide(cert config.CertConfig, log *slog.Logger) decision {
 }
 
 // loadLeaf reads the first PEM block from path and parses it as an
-// X.509 certificate. Works for split (leaf-alone file) and combined
+// X.509 certificate, and reports whether a subsequent CERTIFICATE
+// block exists. Works for split (leaf-alone file) and combined
 // (leaf + chain + key concatenated) — the first block is always the
-// leaf in both layouts.
-func loadLeaf(path string) (*x509.Certificate, error) {
+// leaf in both layouts. hasChain lets the caller distinguish a
+// leaf-only file from a leaf+chain (fullchain or combined) without
+// fetching from the source.
+func loadLeaf(path string) (cert *x509.Certificate, hasChain bool, err error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	block, _ := pem.Decode(raw)
+	block, rest := pem.Decode(raw)
 	if block == nil {
-		return nil, errors.New("no PEM block found")
+		return nil, false, errors.New("no PEM block found")
 	}
 	if block.Type != "CERTIFICATE" {
-		return nil, fmt.Errorf("first PEM block is %s, want CERTIFICATE", block.Type)
+		return nil, false, fmt.Errorf("first PEM block is %s, want CERTIFICATE", block.Type)
 	}
-	return x509.ParseCertificate(block.Bytes)
+	cert, err = x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, false, err
+	}
+	for len(rest) > 0 {
+		var next *pem.Block
+		next, rest = pem.Decode(rest)
+		if next == nil {
+			break
+		}
+		if next.Type == "CERTIFICATE" {
+			hasChain = true
+			break
+		}
+	}
+	return cert, hasChain, nil
 }
 
 // altNamesDiffer reports whether the on-disk leaf's DNSNames don't

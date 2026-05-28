@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -53,6 +54,19 @@ func (f *fakeSources) For(name string) (source.Source, error) {
 
 func writePEMCert(t *testing.T, path string, notBefore, notAfter time.Time, dnsNames []string) {
 	t.Helper()
+	writePEMCertBlocks(t, path, notBefore, notAfter, dnsNames, 1)
+}
+
+// writePEMCertWithChain writes a leaf CERTIFICATE block followed by a
+// second CERTIFICATE block (a self-signed stand-in for an intermediate)
+// — the on-disk shape produced by the writer's fullchain slot.
+func writePEMCertWithChain(t *testing.T, path string, notBefore, notAfter time.Time, dnsNames []string) {
+	t.Helper()
+	writePEMCertBlocks(t, path, notBefore, notAfter, dnsNames, 2)
+}
+
+func writePEMCertBlocks(t *testing.T, path string, notBefore, notAfter time.Time, dnsNames []string, blocks int) {
+	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +78,7 @@ func writePEMCert(t *testing.T, path string, notBefore, notAfter time.Time, dnsN
 		NotAfter:     notAfter,
 		DNSNames:     dnsNames,
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	leafDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,8 +90,23 @@ func writePEMCert(t *testing.T, path string, notBefore, notAfter time.Time, dnsN
 		t.Fatal(err)
 	}
 	defer out.Close()
-	if err := pem.Encode(out, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+	if err := pem.Encode(out, &pem.Block{Type: "CERTIFICATE", Bytes: leafDER}); err != nil {
 		t.Fatal(err)
+	}
+	for i := 1; i < blocks; i++ {
+		chainTmpl := &x509.Certificate{
+			SerialNumber: big.NewInt(int64(i + 1)),
+			Subject:      pkix.Name{CommonName: "intermediate"},
+			NotBefore:    notBefore,
+			NotAfter:     notAfter,
+		}
+		chainDER, err := x509.CreateCertificate(rand.Reader, chainTmpl, chainTmpl, pub, priv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pem.Encode(out, &pem.Block{Type: "CERTIFICATE", Bytes: chainDER}); err != nil {
+			t.Fatal(err)
+		}
 	}
 }
 
@@ -173,6 +202,77 @@ func TestDecide_FreshCertSkips(t *testing.T) {
 	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
 	if d := r.decide(cert, discardLogger()); d.fetch {
 		t.Errorf("fresh cert should skip, got fetch: %s", d.reason)
+	}
+}
+
+func TestDecide_FreshFullchainSlotSkips(t *testing.T) {
+	// Happy path for the fullchain branch: on-disk file contains
+	// leaf + chain, config declares the fullchain slot, TTL is fresh.
+	// Must skip — not be confused into refetching by the shape check.
+	dir := t.TempDir()
+	now := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+	writePEMCertWithChain(t, filepath.Join(dir, "fullchain.pem"),
+		now.AddDate(0, 0, -10), now.AddDate(0, 0, 90),
+		[]string{"host.example.com"})
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: dir,
+		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Key: "tls.key", Fullchain: "fullchain.pem"},
+	}
+	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
+	if d := r.decide(cert, discardLogger()); d.fetch {
+		t.Errorf("fresh fullchain should skip, got fetch: %s", d.reason)
+	}
+}
+
+func TestDecide_CertSlotConfiguredButOnDiskHasChainFetches(t *testing.T) {
+	// Operator flipped fullchain -> cert on the same filename. The
+	// leaf TTL is fresh, but the file's still a fullchain — we must
+	// refetch+rewrite to bring it back to leaf-only.
+	dir := t.TempDir()
+	now := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+	writePEMCertWithChain(t, filepath.Join(dir, "node.crt"),
+		now.AddDate(0, 0, -10), now.AddDate(0, 0, 90),
+		[]string{"host.example.com"})
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: dir,
+		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Cert: "node.crt", Key: "node.key", CA: "ca.crt"},
+	}
+	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
+	d := r.decide(cert, discardLogger())
+	if !d.fetch {
+		t.Fatalf("shape mismatch should fetch, got skip: %s", d.reason)
+	}
+	if !strings.Contains(d.reason, "contains a chain") {
+		t.Errorf("expected shape-mismatch reason, got %q", d.reason)
+	}
+}
+
+func TestDecide_FullchainSlotConfiguredButOnDiskLeafOnlyFetches(t *testing.T) {
+	// Operator flipped cert -> fullchain on the same filename. The
+	// leaf TTL is fresh, but the file's still leaf-only — refetch so
+	// the rewrite appends the chain.
+	dir := t.TempDir()
+	now := time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC)
+	writePEMCert(t, filepath.Join(dir, "node.crt"),
+		now.AddDate(0, 0, -10), now.AddDate(0, 0, 90),
+		[]string{"host.example.com"})
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: dir,
+		Format:      config.FormatSplit,
+		Files:       &config.FilesOverride{Key: "tls.key", Fullchain: "node.crt"},
+	}
+	r := newDecideRenewer(t, Options{ThresholdFraction: 0.25}, now)
+	d := r.decide(cert, discardLogger())
+	if !d.fetch {
+		t.Fatalf("shape mismatch should fetch, got skip: %s", d.reason)
+	}
+	if !strings.Contains(d.reason, "no chain") {
+		t.Errorf("expected shape-mismatch reason, got %q", d.reason)
 	}
 }
 
