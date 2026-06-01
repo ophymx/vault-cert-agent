@@ -15,6 +15,13 @@ Replaces a pair of bash renewers with a single typed implementation.
 
 [1]: https://github.com/ophymx/vault-plugin-letsencrypt
 
+> **Note:** The `letsencrypt` source currently depends on two unmerged
+> commits in [PlayEveryWare/vault-plugin-letsencrypt#31][le-pr-31].
+> Until that PR lands and a release is cut, the plugin must be built
+> from that branch on the Vault side.
+>
+> [le-pr-31]: https://github.com/PlayEveryWare/vault-plugin-letsencrypt/pull/31
+
 Adding a new source is one file in `internal/source/` plus one line in
 `NewRegistry`.
 
