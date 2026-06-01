@@ -9,11 +9,13 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ophymx/vault-cert-agent/internal/config"
@@ -196,9 +198,10 @@ func (r *Renewer) decide(cert config.CertConfig, log *slog.Logger) decision {
 // loadLeaf reads the first PEM block from path and parses it as an
 // X.509 certificate. Works for split (leaf-alone file) and combined
 // (leaf + chain + key concatenated) — the first block is always the
-// leaf in both layouts.
+// leaf in both layouts. O_NOFOLLOW + IsRegular keeps a symlink at
+// leafPath from steering the TTL decision off an unrelated cert.
 func loadLeaf(path string) (*x509.Certificate, error) {
-	raw, err := os.ReadFile(path)
+	raw, err := readForAudit(path)
 	if err != nil {
 		return nil, err
 	}
@@ -251,12 +254,26 @@ func auditOnDiskFiles(cert config.CertConfig) decision {
 	return decision{}
 }
 
+// checkExists verifies path resolves to a regular file the writer
+// could have produced. O_NOFOLLOW + IsRegular matches the writer's
+// posture: a symlink planted by a low-privileged consumer with write
+// access to the destination directory must not be silently accepted as
+// our own output.
 func checkExists(path string) (bool, string) {
-	if _, err := os.Stat(path); err != nil {
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return false, "missing file " + path
 		}
+		return false, "open " + path + ": " + err.Error()
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
 		return false, "stat " + path + ": " + err.Error()
+	}
+	if !info.Mode().IsRegular() {
+		return false, path + " is not a regular file (mode " + info.Mode().String() + ")"
 	}
 	return true, ""
 }
@@ -309,14 +326,31 @@ func checkLeafPlusChain(path string) (bool, string) {
 	return false, path + " missing chain (only one CERTIFICATE block)"
 }
 
-// readForAudit normalises the "missing file" error message so audit
-// callers don't each re-format os.PathError text.
+// readForAudit reads a candidate cert file for shape inspection.
+// O_NOFOLLOW + IsRegular keeps a symlink planted at the destination
+// path from feeding the audit unrelated content. Normalises the
+// "missing file" error so audit callers don't re-format PathError
+// text.
 func readForAudit(path string) ([]byte, error) {
-	raw, err := os.ReadFile(path)
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("missing file %s", path)
+			// Preserve the sentinel so decide()'s
+			// errors.Is(os.ErrNotExist) branch still triggers.
+			return nil, fmt.Errorf("missing file %s: %w", path, err)
 		}
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file (mode %s)", path, info.Mode())
+	}
+	raw, err := io.ReadAll(f)
+	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
 	return raw, nil

@@ -175,6 +175,18 @@ func TestValidate_FilesBlockMustNameAtLeastOneSlot(t *testing.T) {
 	}
 }
 
+func TestValidate_FilesRequiresLeafBearingSlot(t *testing.T) {
+	// key + ca with no leaf-bearing slot leaves the renewer no leaf
+	// to TTL-evaluate, which would cause an unconditional refetch
+	// every run.
+	c := baseCert()
+	c.Files = &FilesOverride{Key: "tls.key", CA: "ca.crt"}
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "cert or fullchain") {
+		t.Errorf("expected leaf-required error, got %v", err)
+	}
+}
+
 func TestValidate_FilesRejectsPathSeparators(t *testing.T) {
 	cases := []struct {
 		name  string

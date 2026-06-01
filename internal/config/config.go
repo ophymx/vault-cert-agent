@@ -118,9 +118,12 @@ type CertConfig struct {
 	LEPath string `hcl:"le_path,optional"`
 }
 
-// FilesOverride lets a cert override the split-format filenames.
-// Absent block = use the source's default names; Fullchain is opt-in
-// (no default name — empty means no fullchain file is written).
+// FilesOverride names the files emitted by a split-format cert. Every
+// slot is opt-in: declaring a slot writes that file, omitting it
+// doesn't, and there are no source-derived defaults. validate enforces
+// that the block is present with at least one slot declared and that
+// one of cert or fullchain is set (the renewer needs a leaf to
+// TTL-evaluate).
 type FilesOverride struct {
 	Cert      string `hcl:"cert,optional"`
 	Key       string `hcl:"key,optional"`

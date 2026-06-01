@@ -182,6 +182,13 @@ func validateSplitFiles(f *FilesOverride) error {
 	if declared == 0 {
 		return errors.New("files block must declare at least one of cert/key/ca/fullchain")
 	}
+	// The renewer needs a leaf to compute remaining-TTL. Without one,
+	// every run would refetch unconditionally — wasting Vault round
+	// trips and re-issuing LE certs each hour. Forbid the corner case
+	// here so it's caught at config-load instead of silently misbehaving.
+	if f.Cert == "" && f.Fullchain == "" {
+		return errors.New("files block must declare cert or fullchain (a leaf-bearing slot is required for TTL-based renewal)")
+	}
 	return nil
 }
 

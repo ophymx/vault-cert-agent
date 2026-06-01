@@ -47,10 +47,17 @@ The package installs:
 - `/etc/vault-cert-agent/` — config directory, mode `0700 root:root`
 - `/usr/share/doc/vault-cert-agent/config.example.hcl` — annotated example
 
-The single-instance timer is enabled and started on first install.
-Upgrades leave the existing enabled/disabled state alone. `apt purge`
-removes `/etc/vault-cert-agent/` (including the AppRole credentials)
-along with the package files.
+On first install, the single-instance timer is enabled and started
+**only if `/etc/vault-cert-agent/config.hcl` already exists** — the
+typical case when configuration management drops the package and
+config together. Hosts that use only templated instances should leave
+the default `config.hcl` absent; the timer stays disabled and only
+the per-instance timers you enable yourself will fire. Upgrades leave
+the existing enabled/disabled state alone. On uninstall, every
+enabled `vault-cert-agent@<name>.timer` is also stopped and disabled
+alongside the single-instance timer. `apt purge` removes
+`/etc/vault-cert-agent/` (including the AppRole credentials) along
+with the package files.
 
 ## Configure
 
@@ -169,7 +176,10 @@ slots:
 
 Each value is a plain basename — no path separators, no `..`, no
 absolute paths. All values must be unique (a two-slot collision is a
-config error). The block must declare at least one slot.
+config error). The block must declare at least one slot, and one of
+`cert` or `fullchain` is required — the renewer reads the leaf from
+disk to compute remaining lifetime, so a key+ca-only layout would
+refetch every run.
 
 Typical declarations:
 

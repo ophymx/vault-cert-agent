@@ -14,10 +14,15 @@ case "$1" in
 
         systemctl daemon-reload
 
-        # Enable + start the timer only on first install. On upgrade
-        # we leave the existing enabled/disabled state alone — an
-        # operator may have deliberately disabled it.
-        if [ -z "$2" ]; then
+        # On first install, enable + start the single-instance timer
+        # only when a default config.hcl already exists — typical when
+        # configuration management drops the package + config together.
+        # Hosts that use only templated instances
+        # (vault-cert-agent@<name>.timer) deliberately have no
+        # /etc/vault-cert-agent/config.hcl; we mustn't fire a timer
+        # that's guaranteed to fail. Upgrades leave existing
+        # enabled/disabled state alone.
+        if [ -z "$2" ] && [ -f /etc/vault-cert-agent/config.hcl ]; then
             systemctl enable --now vault-cert-agent.timer || true
         fi
         ;;
