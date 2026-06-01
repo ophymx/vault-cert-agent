@@ -13,12 +13,15 @@ Replaces a pair of bash renewers with a single typed implementation.
 | `pki`         | `POST {mount}/issue/{role}`                   | Vault's built-in PKI engine.             |
 | `letsencrypt` | `GET {path}` on [vault-plugin-letsencrypt][1] | Plugin does ACME; this agent just reads. |
 
-[1]: https://github.com/ophymx/vault-plugin-letsencrypt
+[1]: https://github.com/PlayEveryWare/vault-plugin-letsencrypt
 
-> **Note:** The `letsencrypt` source currently depends on two unmerged
-> commits in [PlayEveryWare/vault-plugin-letsencrypt#31][le-pr-31].
-> Until that PR lands and a release is cut, the plugin must be built
-> from that branch on the Vault side.
+> **Note:** two features the agent's config exposes — `alt_names`
+> (SANs) and selecting a DNS provider for the DNS-01 ACME challenge —
+> depend on two unmerged commits in
+> [PlayEveryWare/vault-plugin-letsencrypt#31][le-pr-31]. Until that
+> PR lands and a release is cut, build the plugin from that branch
+> on the Vault side if you need either feature; otherwise the latest
+> release from PlayEveryWare is fine.
 >
 > [le-pr-31]: https://github.com/PlayEveryWare/vault-plugin-letsencrypt/pull/31
 
