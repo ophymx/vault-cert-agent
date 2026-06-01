@@ -39,7 +39,7 @@ func run(args []string) int {
 	fs := flag.NewFlagSet("vault-cert-agent", flag.ContinueOnError)
 	var (
 		configPath = fs.String("config", "/etc/vault-cert-agent/config.hcl", "path to config")
-		dryRun     = fs.Bool("dry-run", false, "report what would happen, don't fetch or write")
+		dryRun     = fs.Bool("dry-run", false, "report what would happen; AppRole login still runs, no certs fetched or written")
 		force      = fs.Bool("force", false, "ignore TTL threshold, refetch every cert")
 		verbose    = fs.Bool("verbose", false, "log per-cert decision rationale (sets level=debug)")
 		logFormat  = fs.String("log-format", "text", `"text" (default) or "json"`)

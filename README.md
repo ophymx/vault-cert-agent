@@ -258,6 +258,13 @@ vault-cert-agent [flags]
   -version         print version and exit
 ```
 
+`-dry-run` still performs the AppRole login at startup — useful for
+verifying Vault credentials end-to-end against a freshly-rotated
+`secret_id` — but skips every per-cert fetch and disk write. The
+renewer logs each per-cert decision as `renew` (with a reason) or
+`skip`, so the output mirrors what a real run would do without touching
+Vault's PKI/LE endpoints or any cert file.
+
 Exit codes:
 
 | code | meaning                                                  |
@@ -298,8 +305,12 @@ Release with changelog + checksums.
 ## Tests
 
 ```
-go test ./...
+go test -race -count=1 ./...
 ```
+
+Matches CI; both flags are load-bearing (`-race` catches concurrency
+bugs in the systemd reload path, `-count=1` defeats Go's test cache so
+re-runs actually re-run).
 
 ## License
 
