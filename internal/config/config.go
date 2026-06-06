@@ -89,6 +89,15 @@ type CertConfig struct {
 	Owner       string         `hcl:"owner"`
 	Mode        string         `hcl:"mode"`
 
+	// KeyOwner and KeyMode override Owner and Mode for the private-key
+	// file only — the files.key slot in format=split. Either field may
+	// be set independently; an unset override falls back to the
+	// cert-level field. Both are rejected with format=combined (one
+	// bundled file, one perm set) and when files.key is undeclared
+	// (nothing to apply them to).
+	KeyOwner string `hcl:"key_owner,optional"`
+	KeyMode  string `hcl:"key_mode,optional"`
+
 	// BundleOrder controls the PEM concatenation order in combined
 	// format. Empty falls back to DefaultBundleOrder. Rejected with
 	// format=split.

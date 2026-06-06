@@ -102,6 +102,71 @@ func TestWrite_Split_FirstRunCreatesThreeFiles(t *testing.T) {
 	}
 }
 
+func TestWrite_Split_KeyModeOverrideTightensKeyOnly(t *testing.T) {
+	// The key file gets the tighter 0600; cert and ca keep the
+	// cert-level 0644. Mirrors the conventional postgres setup.
+	dir := t.TempDir()
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: dir,
+		Format:      config.FormatSplit,
+		Owner:       testOwner(t),
+		Mode:        "0644",
+		KeyMode:     "0600",
+		Files:       pkiFiles(),
+	}
+	if _, err := newWriter().Write(sampleMaterial(), cert); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	for path, want := range map[string]os.FileMode{
+		filepath.Join(dir, "node.crt"): 0o644,
+		filepath.Join(dir, "ca.crt"):   0o644,
+		filepath.Join(dir, "node.key"): 0o600,
+	} {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Errorf("stat %s: %v", path, err)
+			continue
+		}
+		if info.Mode().Perm() != want {
+			t.Errorf("%s mode: got %o, want %o", path, info.Mode().Perm(), want)
+		}
+	}
+}
+
+func TestWrite_Split_KeyModeOverrideAppliedOnUnchangedRun(t *testing.T) {
+	// The perm-on-unchanged path must respect the key override too —
+	// otherwise drift correction would silently widen the key.
+	dir := t.TempDir()
+	cert := config.CertConfig{
+		Source:      config.SourcePKI,
+		Destination: dir,
+		Format:      config.FormatSplit,
+		Owner:       testOwner(t),
+		Mode:        "0644",
+		KeyMode:     "0600",
+		Files:       pkiFiles(),
+	}
+	w := newWriter()
+	if _, err := w.Write(sampleMaterial(), cert); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(dir, "node.key")
+	if err := os.Chmod(keyPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write(sampleMaterial(), cert); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Errorf("key mode not re-enforced to override: got %o, want 0600", info.Mode().Perm())
+	}
+}
+
 func TestWrite_Split_NoChangeButFixesStaleMode(t *testing.T) {
 	dir := t.TempDir()
 	dest := filepath.Join(dir, "tls")

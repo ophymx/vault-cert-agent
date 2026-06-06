@@ -77,9 +77,15 @@ func (c CertConfig) validate() error {
 		if err := validateSplitFiles(c.Files); err != nil {
 			return err
 		}
+		if err := c.validateKeyOverrides(); err != nil {
+			return err
+		}
 	case FormatCombined:
 		if c.Files != nil {
 			return errors.New("files block is only valid with format=split")
+		}
+		if c.KeyOwner != "" || c.KeyMode != "" {
+			return errors.New("key_owner/key_mode only apply to format=split (combined is one bundled file)")
 		}
 		if c.BundleOrder != "" && !validBundleOrder(c.BundleOrder) {
 			return fmt.Errorf("unknown bundle_order %q (want one of %s)",
@@ -116,6 +122,30 @@ func (c CertConfig) validate() error {
 		}
 	default:
 		return fmt.Errorf("unknown source %q (want %q or %q)", c.Source, SourcePKI, SourceLetsencrypt)
+	}
+	return nil
+}
+
+// validateKeyOverrides checks key_owner / key_mode for format=split.
+// Either can be set independently; each must parse on its own and
+// must apply to a declared files.key slot. Caller has already
+// confirmed Format=FormatSplit and c.Files non-nil.
+func (c CertConfig) validateKeyOverrides() error {
+	if c.KeyOwner == "" && c.KeyMode == "" {
+		return nil
+	}
+	if c.Files.Key == "" {
+		return errors.New("key_owner/key_mode require a files.key declaration (nothing to apply them to)")
+	}
+	if c.KeyOwner != "" {
+		if _, _, err := ParseOwner(c.KeyOwner); err != nil {
+			return fmt.Errorf("key_owner: %w", err)
+		}
+	}
+	if c.KeyMode != "" {
+		if _, err := ParseMode(c.KeyMode); err != nil {
+			return fmt.Errorf("key_mode: %w", err)
+		}
 	}
 	return nil
 }

@@ -85,23 +85,32 @@ func ResolveLeafPath(cert config.CertConfig) string {
 }
 
 // splitFile pairs a configured filename with the bytes that slot
-// should hold. Slots whose filename is empty are filtered out.
+// should hold plus the perms to commit it under. The key slot may
+// carry its own perms via cert.KeyOwner/KeyMode; everything else
+// uses the cert-level Owner/Mode.
 type splitFile struct {
-	path    string
-	content []byte
+	path     string
+	content  []byte
+	mode     os.FileMode
+	uid, gid int
 }
 
 func (w *Writer) writeSplit(m *source.Material, cert config.CertConfig, mode os.FileMode, uid, gid int) (*Result, error) {
 	// Validation has already enforced that cert.Files is non-nil with
-	// at least one slot declared, and that no two slots collide.
+	// at least one slot declared, that no two slots collide, and that
+	// any key_owner/key_mode override is paired with a files.key slot.
 	if err := os.MkdirAll(cert.Destination, 0o755); err != nil {
 		return nil, fmt.Errorf("mkdir %s: %w", cert.Destination, err)
 	}
+	keyMode, keyUID, keyGID, err := resolveKeyPerms(cert, mode, uid, gid)
+	if err != nil {
+		return nil, err
+	}
 	f := cert.Files
-	files := splitFiles(cert.Destination, f, m)
+	files := splitFiles(cert.Destination, f, m, mode, uid, gid, keyMode, keyUID, keyGID)
 	out := &Result{}
 	for _, sf := range files {
-		changed, err := w.commitFile(sf.path, sf.content, mode, uid, gid)
+		changed, err := w.commitFile(sf.path, sf.content, sf.mode, sf.uid, sf.gid)
 		if err != nil {
 			return nil, err
 		}
@@ -111,24 +120,32 @@ func (w *Writer) writeSplit(m *source.Material, cert config.CertConfig, mode os.
 	return out, nil
 }
 
-func splitFiles(dest string, f *config.FilesOverride, m *source.Material) []splitFile {
+func splitFiles(
+	dest string, f *config.FilesOverride, m *source.Material,
+	defMode os.FileMode, defUID, defGID int,
+	keyMode os.FileMode, keyUID, keyGID int,
+) []splitFile {
 	files := make([]splitFile, 0, 4)
-	add := func(name string, content []byte) {
+	add := func(name string, content []byte, isKey bool) {
 		if name == "" {
 			return
 		}
-		files = append(files, splitFile{filepath.Join(dest, name), content})
+		mode, uid, gid := defMode, defUID, defGID
+		if isKey {
+			mode, uid, gid = keyMode, keyUID, keyGID
+		}
+		files = append(files, splitFile{filepath.Join(dest, name), content, mode, uid, gid})
 	}
-	add(f.Cert, m.Cert)
-	add(f.Key, m.Key)
-	add(f.CA, m.CA)
+	add(f.Cert, m.Cert, false)
+	add(f.Key, m.Key, true)
+	add(f.CA, m.CA, false)
 	if f.Fullchain != "" {
 		// Leaf + chain concatenated. ensureNewline at source.Material
 		// boundaries guarantees a separating newline between blocks.
 		fc := make([]byte, 0, len(m.Cert)+len(m.CA))
 		fc = append(fc, m.Cert...)
 		fc = append(fc, m.CA...)
-		add(f.Fullchain, fc)
+		add(f.Fullchain, fc, false)
 	}
 	return files
 }
@@ -321,6 +338,34 @@ func enforcePerms(path string, mode os.FileMode, uid, gid int) error {
 		return fmt.Errorf("chown %s: %w", path, err)
 	}
 	return nil
+}
+
+// resolveKeyPerms returns the perms to use for the files.key slot.
+// Each KeyOwner/KeyMode override is independent: an unset field
+// falls back to the cert-level perms passed in. Both have already
+// been syntactically validated at config-load; lookupOwner is the
+// only step that can still fail here (unknown user/group on this host).
+func resolveKeyPerms(cert config.CertConfig, fallbackMode os.FileMode, fallbackUID, fallbackGID int) (os.FileMode, int, int, error) {
+	mode, uid, gid := fallbackMode, fallbackUID, fallbackGID
+	if cert.KeyMode != "" {
+		m, err := config.ParseMode(cert.KeyMode)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("key_mode: %w", err)
+		}
+		mode = m
+	}
+	if cert.KeyOwner != "" {
+		userName, groupName, err := config.ParseOwner(cert.KeyOwner)
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("key_owner: %w", err)
+		}
+		ku, kg, err := lookupOwner(userName, groupName)
+		if err != nil {
+			return 0, 0, 0, err
+		}
+		uid, gid = ku, kg
+	}
+	return mode, uid, gid, nil
 }
 
 func resolvePerms(cert config.CertConfig) (os.FileMode, int, int, error) {

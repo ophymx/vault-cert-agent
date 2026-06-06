@@ -48,6 +48,12 @@ cert "pg-agent-db0" {
   }
   owner          = "postgres:postgres"
   mode           = "0600"
+  # Optional per-key override. When set, files.key gets these perms
+  # instead of `owner`/`mode`. Either field is independent; an unset
+  # override falls back to the cert-level value. Requires
+  # format=split + a declared files.key.
+  # key_owner    = "postgres:postgres"
+  # key_mode     = "0600"
   # Reload action. Two options, mutually exclusive:
   #   reload_command — argv list. Direct exec, no shell — no word
   #                    splitting, no $variable expansion, no pipes.

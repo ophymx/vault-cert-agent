@@ -203,7 +203,26 @@ files {
 }
 ```
 
-The same `owner` / `mode` apply to every file the block produces.
+The same `owner` / `mode` apply to every file the block produces,
+unless overridden for the key with `key_owner` / `key_mode`:
+
+```hcl
+# Cert + chain readable by all of $services, key only by postgres.
+files {
+  cert = "node.crt"
+  key  = "node.key"
+  ca   = "ca.crt"
+}
+owner     = "root:postgres"
+mode      = "0644"
+key_owner = "postgres:postgres"
+key_mode  = "0600"
+```
+
+`key_owner` and `key_mode` are each independent — set whichever you
+need; an unset override falls back to the cert-level field. Both
+require a `files.key` slot and are rejected with `format = "combined"`
+(one bundled file, one perm set).
 
 ### Reload action
 

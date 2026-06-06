@@ -244,6 +244,70 @@ func TestValidate_CombinedRejectsFilesBlock(t *testing.T) {
 	}
 }
 
+func TestValidate_KeyOverridesAcceptedIndependently(t *testing.T) {
+	cases := []struct {
+		name string
+		mod  func(c *CertConfig)
+	}{
+		{"none", func(c *CertConfig) {}},
+		{"key_mode only", func(c *CertConfig) { c.KeyMode = "0600" }},
+		{"key_owner only", func(c *CertConfig) { c.KeyOwner = "postgres:postgres" }},
+		{"both", func(c *CertConfig) {
+			c.KeyOwner = "postgres:postgres"
+			c.KeyMode = "0600"
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := baseCert()
+			tc.mod(&c)
+			if err := c.validate(); err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_KeyOverridesRequireFilesKey(t *testing.T) {
+	c := baseCert()
+	c.Files = &FilesOverride{Cert: "node.crt", CA: "ca.crt"}
+	c.KeyMode = "0600"
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "files.key") {
+		t.Errorf("expected files.key-required error, got %v", err)
+	}
+}
+
+func TestValidate_KeyOverridesRejectedWithCombined(t *testing.T) {
+	c := baseCert()
+	c.Format = FormatCombined
+	c.Files = nil
+	c.Destination = "/etc/c/bundle.pem"
+	c.KeyOwner = "postgres:postgres"
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "format=split") {
+		t.Errorf("expected combined-rejects-key-overrides error, got %v", err)
+	}
+}
+
+func TestValidate_KeyOwnerMalformed(t *testing.T) {
+	c := baseCert()
+	c.KeyOwner = "postgres" // missing :group
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "key_owner") {
+		t.Errorf("expected key_owner parse error, got %v", err)
+	}
+}
+
+func TestValidate_KeyModeMalformed(t *testing.T) {
+	c := baseCert()
+	c.KeyMode = "rwx" // not octal
+	err := c.validate()
+	if err == nil || !strings.Contains(err.Error(), "key_mode") {
+		t.Errorf("expected key_mode parse error, got %v", err)
+	}
+}
+
 func TestValidate_ValidReloadConfigurationsAccepted(t *testing.T) {
 	cases := []struct {
 		name string
