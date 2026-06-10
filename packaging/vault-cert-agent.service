@@ -5,6 +5,10 @@ Documentation=https://github.com/ophymx/vault-cert-agent
 # round-trip. Without it the first post-boot run can race the network.
 After=network-online.target
 Wants=network-online.target
+# Skip silently when the default config is absent — hosts that only
+# run templated instances would otherwise emit an hourly ERROR from
+# the timer firing against a missing /etc/vault-cert-agent/config.hcl.
+ConditionPathExists=/etc/vault-cert-agent/config.hcl
 
 [Service]
 Type=oneshot
